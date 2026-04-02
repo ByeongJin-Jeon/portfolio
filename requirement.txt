@@ -1,0 +1,33 @@
+# ============================================================
+# Geopolitically Resilient Multi-Asset Allocation Engine
+# Requirements
+# ============================================================
+
+# --- Core Data & Numerics ---
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.13.0
+
+# --- Market Data ---
+yfinance>=0.2.40
+pandas-datareader>=0.10.0     # Fama-French factor data (Ken French library)
+pykrx>=1.0.45                 # KOSPI universe & market cap data
+
+# --- Optimization ---
+Riskfolio-Lib>=6.1.0          # HRP, Black-Litterman, CDaR / UPI
+cvxpy>=1.5.0                  # Solver backend for Riskfolio-Lib
+
+# --- Backtesting ---
+vectorbt>=0.26.1
+
+# --- Macro / Volatility ---
+yfinance>=0.2.40              # VIX (^VIX), TIPS ETF (TIP) via yfinance
+
+# --- Utilities ---
+unicodedata2>=15.1.0          # NFC normalization for Korean tickers
+tqdm>=4.66.0                  # Progress bars for data fetching loops
+python-dotenv>=1.0.0          # .env for API keys if needed later
+
+# --- Visualization (optional but recommended for signal inspection) ---
+matplotlib>=3.9.0
+seaborn>=0.13.0
