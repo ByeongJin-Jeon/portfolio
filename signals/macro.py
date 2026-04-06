@@ -10,7 +10,7 @@ def get_macro_signals():
     """
     # 1. Fetch Macro Data (VIX and 10Y TIPS)
     # ^VIX for volatility, TIP for real-rate proxy
-    macro_data = yf.download(["^VIX", TIPS_TICKER], period="5d")['Adj Close']
+    macro_data = yf.download(["^VIX", TIPS_TICKER], period="5d", auto_adjust=True)['Close']
     
     current_vix = macro_data["^VIX"].iloc[-1]
     current_tips = macro_data[TIPS_TICKER].iloc[-1]

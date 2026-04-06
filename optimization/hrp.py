@@ -8,11 +8,7 @@ def get_hrp_prior_weights(returns):
     This acts as the 'Prior' for our Black-Litterman model.
     """
     # Initialize the Portfolio object
-    port = rp.Portfolio(returns=returns)
-    
-    # Calculate Codependence and Linkage
-    # We use Pearson correlation and Ward linkage to find stable clusters
-    port.assets_stats(method_mu='hist', method_cov='hist', d=0.94)
+    port = rp.HCPortfolio(returns=returns)
     
     # Optimization: HRP doesn't require a mean vector (mu), making it robust
     # to the 'noise' of 2026 geopolitical shifts.
@@ -21,8 +17,7 @@ def get_hrp_prior_weights(returns):
         codependence=HRP_DISTANCE_METRIC,
         linkage=HRP_LINKAGE_METHOD,
         rm='MV',  # Standard variance as the risk measure for HRP
-        rf=0,
-        hist=True
+        rf=0
     )
     
     return hrp_weights

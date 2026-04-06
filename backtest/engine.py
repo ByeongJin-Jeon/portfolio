@@ -10,22 +10,35 @@ class ResilientBacktester:
     def __init__(self, price_data):
         self.prices = price_data
 
+    def run_single_scenario(self, weights, scenario_name):
+        """Runs a specific crisis window (e.g., MIDEAST_2026)."""
+        start, end = BACKTEST_SCENARIOS[scenario_name]
+        
+        # 1. Slice dates for the scenario window
+        date_subset = self.prices.loc[start:end] if end else self.prices.loc[start:]
+        
+        # 2. CRITICAL FIX: Slice columns to match the weight index (Top 10)
+        # This resolves the (10, 1) vs (129, 14) shape mismatch
+        asset_subset = date_subset[weights.index]
+        
+        # 3. Simulate target-weight rebalancing
+        pf = vbt.Portfolio.from_orders(
+            close=asset_subset,
+            size=weights.values.flatten(),
+            size_type='target_percent',
+            init_cash=BACKTEST_INITIAL_CAPITAL,
+            fees=BACKTEST_COMMISSION,
+            freq='D',
+            cash_sharing=True
+        )
+        return pf
+
     def run_all_scenarios(self, weights):
-        """Runs the engine across 2008, 2020, and 2026 windows."""
-        results = {}
-        for name, (start, end) in BACKTEST_SCENARIOS.items():
-            # Slice data for the specific crisis period
-            subset = self.prices.loc[start:end] if end else self.prices.loc[start:]
-            
-            # Simulate target-weight rebalancing
-            pf = vbt.Portfolio.from_orders(
-                close=subset,
-                size=weights,
-                size_type='target_percent',
-                init_cash=BACKTEST_INITIAL_CAPITAL,
-                fees=BACKTEST_COMMISSION,
-                freq='D',
-                cash_sharing=True
-            )
-            results[name] = pf
+        """Runs the engine across all windows in config."""
+        results = {name: self.run_single_scenario(weights, name) for name in BACKTEST_SCENARIOS.keys()}
         return results
+
+def run_scenario_backtest(price_data, weights, scenario_name):
+    """Bridge function for main.py orchestration."""
+    tester = ResilientBacktester(price_data)
+    return tester.run_all_scenarios(weights, scenario_name)

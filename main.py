@@ -1,33 +1,89 @@
 # -*- coding: utf-8 -*-
-from data.loader import load_from_cache
+"""
+main.py (Final Stage 4)
+======================
+The Grand Finale: Executes Filtering, Optimization, and Resilience Backtesting.
+"""
+
+import os
+import time
+import pandas as pd
+import yfinance as yf
+from config import (
+    BACKTEST_INITIAL_CAPITAL, DATA_DIR,
+    PRICE_START, PRICE_END
+)
+from data.universe import UniverseManager
+from data.loader import (
+    load_from_cache, save_to_cache,
+    fetch_data_in_chunks, filter_candidates, apply_currency_conversion
+)
 from signals.composer import compose_bl_inputs
 from portfolio.factor_loading import calculate_idiosyncratic_risk
 from optimization.hrp import get_hrp_prior_weights
 from optimization.black_litterman import construct_bl_model
 from portfolio.selector import select_final_portfolio, export_portfolio
+from portfolio.constraints import calculate_liquidity_caps
 from backtest.engine import run_scenario_backtest
+from evaluation.metrics import calculate_resilience_suite
 
 def main():
-    # 1. Load Data
-    prices = load_from_cache("data/cache/universe_prices.csv")
+    # 1. 데이터 로드 및 통화 변환 (KRW 기준)
+    um = UniverseManager()
+    full_ticker_list = um.get_full_universe()
+    print(f"🛰️ Scanned {len(full_ticker_list)} potential candidates globally.")
+
+    price_path = os.path.join(DATA_DIR, "universe_prices.csv")
+    volume_path = os.path.join(DATA_DIR, "universe_volumes.csv")
+
+    print("📥 Fetching fresh data for the entire universe... (This may take a while)")
+    full_prices, full_volumes = fetch_data_in_chunks(full_ticker_list, PRICE_START, PRICE_END, chunk_size=50)
+    save_to_cache(full_prices, price_path)
+    save_to_cache(full_volumes, volume_path)
+
+    raw_prices = load_from_cache(price_path)
+    raw_volumes = load_from_cache(volume_path)
     
-    # 2. Generate Signals & Macro Logic
-    q_views, initial_omega, kill_switch = compose_bl_inputs(prices)
+    # [Stage 2] 정예 50인 필터링
+    print("💱 Converting full universe to KRW for fair comparison...")
+    all_prices_krw, _ = apply_currency_conversion(raw_prices)
+
+    candidate_tickers = filter_candidates(all_prices_krw, raw_volumes, top_n=50)
+    filtered_prices = all_prices_krw[candidate_tickers]
+    filtered_volumes = raw_volumes[candidate_tickers]
+    print(f"✅ Filtered down to top {len(candidate_tickers)} momentum leaders.")
     
-    # 3. Factor Analysis for Omega Refinement
-    idio_risk = calculate_idiosyncratic_risk(prices.pct_change())
+    returns = filtered_prices.ffill().pct_change(fill_method=None).dropna()
+
+    # 2. [Stage 3] 지휘소 가동 (VIX 킬스위치 & 추세 신호)
+    q_views, initial_omega, kill_switch_active = compose_bl_inputs(filtered_prices)
+
+    # 3. 최적화 엔진: HRP(뼈대) + Black-Litterman(전망)
+    idio_risk = calculate_idiosyncratic_risk(returns)
+    hrp_prior = get_hrp_prior_weights(returns)
+    # TODO: Debugging
+    bl_port = construct_bl_model(returns, hrp_prior, q_views, idio_risk)
+
+    # 4. 제약 조건 및 최종 TOP 10 선정
+    liquidity_caps = calculate_liquidity_caps(filtered_volumes, filtered_prices, BACKTEST_INITIAL_CAPITAL)
+    final_weights = select_final_portfolio(bl_port, liquidity_caps)
     
-    # 4. Optimization Sequence
-    hrp_prior = get_hrp_prior_weights(prices.pct_change())
-    bl_port = construct_bl_model(prices.pct_change(), hrp_prior, q_views, idio_risk)
+    export_portfolio(final_weights, "outputs/final_weights.csv")
+
+    # 5. [Stage 4] 백테스트 & 성적표 출력
+    print("\n📊 Running 'MIDEAST_2026' Resilience Simulation...")
+    pf_result = run_scenario_backtest(filtered_prices, final_weights)
     
-    # 5. Constraints & Selection
-    final_top_10 = select_final_portfolio(bl_port.w, liquidity_caps={}) # Caps can be passed here
-    export_portfolio(final_top_10, "outputs/final_weights.csv")
+    # 탄력성 지표 계산 (MDD, Ulcer Index 등)
+    stats = calculate_resilience_suite(pf_result)
+
+    print("\n" + "="*50)
+    print("🏆 BACKTEST SCORECARD 🏆")
+    print("="*50)
+    for metric, value in stats.items():
+        print(f"{metric}: {value:.2f}")
     
-    # 6. Backtest 2026 Scenario
-    mideast_bt = run_scenario_backtest(prices, final_top_10, "MIDEAST_2026")
-    print(mideast_bt.stats())
+    print("\n✅ Strategy execution complete. Check 'outputs/' for details.")
 
 if __name__ == "__main__":
     main()
