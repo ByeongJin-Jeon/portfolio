@@ -17,14 +17,26 @@ class ResilientBacktester:
         # 1. Slice dates for the scenario window
         date_subset = self.prices.loc[start:end] if end else self.prices.loc[start:]
         
-        # 2. CRITICAL FIX: Slice columns to match the weight index (Top 10)
-        # This resolves the (10, 1) vs (129, 14) shape mismatch
-        asset_subset = date_subset[weights.index]
+        # 해당 기간에 데이터가 하나라도 NaN인 종목은 제외!
+        available_assets = date_subset.columns[date_subset.iloc[0].notnull()]
+        final_assets = [a for a in weights.index if a in available_assets]
+
+        if not final_assets:
+            print(f"⚠️  Skipping '{scenario_name}': No assets from your Top 10 existed during this period.")
+            # 빈 결과물이나 에러를 대신할 수 있는 Dummy 객체 혹은 None 리턴
+            return None
+        
+        # 비중 재조정 (선택된 애들끼리 다시 100% 채우기)
+        new_weights = weights.loc[final_assets]
+        new_weights = new_weights / new_weights.sum()
+        new_weights = new_weights.values.flatten()
+
+        asset_subset = date_subset[final_assets]
         
         # 3. Simulate target-weight rebalancing
         pf = vbt.Portfolio.from_orders(
             close=asset_subset,
-            size=weights.values.flatten(),
+            size=new_weights,
             size_type='target_percent',
             init_cash=BACKTEST_INITIAL_CAPITAL,
             fees=BACKTEST_COMMISSION,

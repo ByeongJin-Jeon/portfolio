@@ -24,7 +24,7 @@ from optimization.hrp import get_hrp_prior_weights
 from optimization.black_litterman import construct_bl_model
 from portfolio.selector import select_final_portfolio, export_portfolio
 from portfolio.constraints import calculate_liquidity_caps
-from backtest.engine import run_scenario_backtest
+from backtest.engine import ResilientBacktester, run_scenario_backtest
 from evaluation.metrics import calculate_resilience_suite
 
 def main():
@@ -61,7 +61,6 @@ def main():
     # 3. 최적화 엔진: HRP(뼈대) + Black-Litterman(전망)
     idio_risk = calculate_idiosyncratic_risk(returns)
     hrp_prior = get_hrp_prior_weights(returns)
-    # TODO: Debugging
     bl_port = construct_bl_model(returns, hrp_prior, q_views, idio_risk)
 
     # 4. 제약 조건 및 최종 TOP 10 선정
@@ -72,10 +71,26 @@ def main():
 
     # 5. [Stage 4] 백테스트 & 성적표 출력
     print("\n📊 Running 'MIDEAST_2026' Resilience Simulation...")
-    pf_result = run_scenario_backtest(filtered_prices, final_weights)
+    backtester = ResilientBacktester(all_prices_krw)
+    
+    all_results = backtester.run_all_scenarios(final_weights)
+
+    print("\n" + "="*60)
+    print("🏆 FINAL MULTI-SCENARIO RESILIENCE REPORT 🏆")
+    print("="*60)
     
     # 탄력성 지표 계산 (MDD, Ulcer Index 등)
-    stats = calculate_resilience_suite(pf_result)
+    for scenario_name, pf_result in all_results.items():
+        if pf_result is None:
+            print(f"\n[Scenario: {scenario_name}] - No data available, skipping report.")
+            continue
+        # 시나리오별 탄력성 지표 계산
+        stats = calculate_resilience_suite(pf_result)
+        
+        print(f"\n[Scenario: {scenario_name}]")
+        print("-" * 30)
+        for metric, value in stats.items():
+            print(f" - {metric:25}: {value:10.2f}")
 
     print("\n" + "="*50)
     print("🏆 BACKTEST SCORECARD 🏆")

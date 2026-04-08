@@ -1,17 +1,29 @@
 # -*- coding: utf-8 -*-
 import numpy as np
+import pandas as pd
 
 def calculate_resilience_suite(vbt_pf):
     """
     Computes specialized metrics for crisis-management evaluation.
     """
+    dd_attr = vbt_pf.drawdown
+    
+    if callable(dd_attr):
+        dd_data = dd_attr()
+    else:
+        dd_data = dd_attr
+
+    if hasattr(dd_data, 'to_pandas'):
+        dd_series = dd_data.to_pandas()
+    else:
+        dd_series = pd.Series(dd_data)
+    
     # 1. Max Drawdown (MDD) - The maximum peak-to-trough decline
-    mdd = vbt_pf.max_drawdown() * 100
+    mdd = dd_series.min() * 100
     
     # 2. Ulcer Index (UI) - Measures the depth AND duration of drawdowns
     # UI = sqrt(mean(drawdown^2))
-    drawdowns = vbt_pf.drawdowns.drawdown()
-    ui = np.sqrt(np.mean(np.square(drawdowns))) * 100
+    ui = np.sqrt(np.mean(np.square(dd_series))) * 100
     
     # 3. Serenity Ratio - A holistic measure of 'stress-free' return
     # Formula: (Annualized Return - RF) / (Ulcer Index * Max Drawdown)

@@ -9,11 +9,19 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
     Integrates tactical views and executes CDaR optimization for UPI maximization.
     """
     # 1. P Matrix (Picking Matrix)
+    if isinstance(tactical_views, pd.DataFrame):
+        tactical_views = tactical_views.iloc[-1]
+    
     active_assets = tactical_views[tactical_views != 0].index
+
     if len(active_assets) == 0: # Fallback if no signals
         return hrp_weights
         
-    P = pd.DataFrame(0, index=active_assets, columns=returns.columns)
+    p_matrix = np.zeros((len(tactical_views), len(active_assets)))
+    for i, asset in enumerate(active_assets):
+        p_matrix[i, i] = 1 
+    P = pd.DataFrame(p_matrix, columns=active_assets)
+
     for asset in active_assets:
         P.loc[asset, asset] = 1
         

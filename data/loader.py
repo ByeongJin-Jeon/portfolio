@@ -70,6 +70,10 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
 
 def filter_candidates(prices, volumes, top_n=50):
     """유동성 상위 200개 중 6개월 모멘텀 상위 50개 선발"""
+    valid_mask = prices.tail(252).isnull().mean() < 0.20
+    prices = prices.loc[:, valid_mask]
+    volumes = volumes.loc[:, valid_mask]
+    
     dollar_volume = prices * volumes
     avg_dollar_volume = dollar_volume.tail(20).mean()
     liquid_candidates = avg_dollar_volume.nlargest(200).index
