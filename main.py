@@ -6,6 +6,11 @@ The Grand Finale: Executes Filtering, Optimization, and Resilience Backtesting.
 """
 
 import os
+import shutil
+
+os.environ['NUMBA_DISABLE_CACHE'] = '1'
+os.environ['NUMBA_CACHE_DIR'] = '/tmp/numba_cache_fresh'
+
 import time
 import pandas as pd
 import yfinance as yf
@@ -54,6 +59,8 @@ def main():
     print(f"✅ Filtered down to top {len(candidate_tickers)} momentum leaders.")
     
     returns = filtered_prices.ffill().pct_change(fill_method=None).dropna()
+    returns = returns.clip(lower=-0.3, upper=0.3) 
+    print("⚠️ 극단적 이상치(±30%)를 보정했습니다.")
 
     # 2. [Stage 3] 지휘소 가동 (VIX 킬스위치 & 추세 신호)
     q_views, initial_omega, kill_switch_active = compose_bl_inputs(filtered_prices)

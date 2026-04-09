@@ -70,17 +70,44 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
 
 def filter_candidates(prices, volumes, top_n=50):
     """유동성 상위 200개 중 6개월 모멘텀 상위 50개 선발"""
-    valid_mask = prices.tail(252).isnull().mean() < 0.20
-    prices = prices.loc[:, valid_mask]
-    volumes = volumes.loc[:, valid_mask]
+    all_tickers = prices.columns
+    kr_tickers = [t for t in all_tickers if t.isdigit()]
+    us_tickers = [t for t in all_tickers if not t.isdigit()]
+
+    def get_scores(tickers):
+        if not tickers: return pd.Series()
+        p_sub = prices[tickers]
+        v_sub = volumes[tickers]
+        
+        dollar_vol = p_sub * v_sub
+        avg_vol = dollar_vol.tail(20).mean()
+        liquid_idx = avg_vol.nlargest(min(100, len(tickers))).index
+        
+        mom = (p_sub[liquid_idx].iloc[-1] / p_sub[liquid_idx].iloc[-126]) - 1
+        return mom
+
+    print(f"Hybrid Selection: KR({len(kr_tickers)}), US({len(us_tickers)})")
     
-    dollar_volume = prices * volumes
-    avg_dollar_volume = dollar_volume.tail(20).mean()
-    liquid_candidates = avg_dollar_volume.nlargest(200).index
+    kr_scores = get_scores(kr_tickers)
+    us_scores = get_scores(us_tickers)
     
-    subset_prices = prices[liquid_candidates]
-    momentum_6m = (subset_prices.iloc[-1] / subset_prices.iloc[-126]) - 1
-    return momentum_6m.nlargest(top_n).index
+    # 1. 각 시장별 고정 쿼터 (15개씩)
+    selected_kr = kr_scores.nlargest(15).index.tolist()
+    selected_us = us_scores.nlargest(15).index.tolist()
+    
+    # 2. 와일드카드 (나머지 중 상위 20개)
+    remaining_scores = pd.concat([
+        kr_scores.drop(selected_kr, errors='ignore'),
+        us_scores.drop(selected_us, errors='ignore')
+    ])
+    wildcards = remaining_scores.nlargest(20).index.tolist()
+    
+    final_candidates = selected_kr + selected_us + wildcards
+    
+    print(f"✅ Selected 50: KR({len(selected_kr + [w for w in wildcards if w in kr_tickers])}), "
+          f"US({len(selected_us + [w for w in wildcards if w in us_tickers])})")
+    
+    return final_candidates
 
 def apply_currency_conversion(price_df):
     """
