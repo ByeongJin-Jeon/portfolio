@@ -130,58 +130,54 @@ def fetch_pbr_data(ticker_list):
     
     return pd.Series(pbr_map)
 
-def filter_candidates(price_df, volume_df, top_n=50):
-    """6M 유동성 + Sharpe 모멘텀 + PBR 하방 필터 통합"""
-    # 1. [핵심] 시차 때문에 생긴 빈칸(NaN)을 '가장 최근 장 열린 날의 가격'으로 채우기!
-    filled_price = price_df.ffill()
-    filled_volume = volume_df.ffill()
-    
-    # 거래대금 계산 (채워진 데이터로 공정하게!)
-    dollar_volume = filled_price * filled_volume
-    avg_vol = dollar_volume.tail(20).mean()
-    
-    # 2. 국가별 유동성 쿼터 (각각 50개씩 정예 선발)
-    kr_pool = [t for t in avg_vol.index if is_kr_ticker(t)]
-    us_pool = [t for t in avg_vol.index if not is_kr_ticker(t)]
-    
-    top_kr_liquid = avg_vol.reindex(kr_pool).nlargest(50).index
-    top_us_liquid = avg_vol.reindex(us_pool).nlargest(50).index
-    
-    candidates_pool = top_kr_liquid.union(top_us_liquid)
-    filtered_prices = filled_price[candidates_pool]
-    
-    # 3. 모멘텀 계산 (이제 빈칸이 없으니 억울한 실격자 제로!)
-    returns_6m = filtered_prices.pct_change(126, fill_method=None).iloc[-1]
-    volatility_6m = filtered_prices.pct_change(fill_method=None).tail(126).std() * np.sqrt(252)
-    momentum_score = returns_6m / (volatility_6m + 1e-6)
+def filter_candidates(price_df, volume_df):
+    """6M 유동성 + Sharpe 모멘텀 + 저변동성 필터"""
+    # 1. 최근 60일(약 3개월) 모멘텀 및 변동성 계산
+    window = min(60, len(price_df) - 1)
+    if window > 0:
+        # 일간 수익률의 표준편차 = 변동성 (Volatility)
+        returns = price_df.pct_change().tail(window)
+        volatility = returns.std()
+        volatility = volatility.replace(0, 0.0001) # 0으로 나누기 방지
+        
+        # 60일 수익률 = 모멘텀 (Momentum)
+        momentum = (price_df.iloc[-1] / price_df.iloc[-(window+1)]) - 1
+        
+        # Quality Score = 모멘텀 / 변동성 (단기 샤프비율 느낌!)
+        quality_score = momentum / volatility
+    else:
+        quality_score = pd.Series(1, index=price_df.columns)
 
-    # 4. PBR 데이터 수집 및 점수화
-    pbr_series = fetch_pbr_data(candidates_pool.tolist())
-    pbr_series = pbr_series.reindex(candidates_pool).fillna(1.5) # 데이터 없으면 평범한 수준으로 가정
-    value_score = 1 / pbr_series.clip(lower=0.1)
+    # 2. 거래대금 계산 (최근 20일 평균 거래량 * 가격)
+    avg_volume = volume_df.tail(20).mean()
+    avg_price = price_df.tail(20).mean()
+    dollar_volume = avg_volume * avg_price
 
-    # 5. 최종 점수 정규화 및 선발
-    def z_score(s):
-        return (s - s.mean()) / (s.std() + 1e-6)
+    # 3. 한국/미국 유니버스 분리
+    is_kr = pd.Series(dollar_volume.index.map(is_kr_ticker), index=dollar_volume.index)
+    kr_universe = dollar_volume[is_kr]
+    us_universe = dollar_volume[~is_kr]
 
-    final_scores = (z_score(momentum_score) * 0.7) + (z_score(value_score) * 0.3)
-    
-    # [방어막 2] 혹시라도 점수가 NaN인 애들은 0점(평균)으로 메꿔서 실격 방지!
-    final_scores = final_scores.fillna(0)
-    
-    selected_kr = final_scores.reindex(top_kr_liquid).nlargest(15).index.tolist()
-    selected_us = final_scores.reindex(top_us_liquid).nlargest(15).index.tolist()
-    
-    remaining = final_scores.drop(selected_kr + selected_us, errors='ignore')
-    wildcards = remaining.nlargest(20).index.tolist()
-    
+    # 4. [1차 예선] 일단 돈 많은(유동성 상위) 50명씩 추림
+    top_kr_liquid = kr_universe.nlargest(50).index
+    top_us_liquid = us_universe.nlargest(50).index
+
+    # 5. [2차 본선] 그 50명 중에서 'Quality Score'가 높은 최정예 15명씩 선발!
+    selected_kr = quality_score.reindex(top_kr_liquid).nlargest(15).index.tolist()
+    selected_us = quality_score.reindex(top_us_liquid).nlargest(15).index.tolist()
+
+    # 패자부활전: 남은 애들 중에 퀄리티 좋은 20명 추가 (Wildcards)
+    remaining_liquid = list(set(top_kr_liquid.tolist() + top_us_liquid.tolist()) - set(selected_kr + selected_us))
+    wildcards = quality_score.reindex(remaining_liquid).nlargest(20).index.tolist()
+
     final_50 = selected_kr + selected_us + wildcards
+
     final_list = list(set(final_50 + CORE_ETFS))
     final_list = [t for t in final_list if t in price_df.columns]
-    
+
     print(f"✅ Selected {len(final_list)}: KR({len([t for t in final_50 if is_kr_ticker(t)])}), "
           f"US({len([t for t in final_50 if not is_kr_ticker(t)])}), "
-          f"(Including Macro Core ETFs!)")
+          f"(Including {len(CORE_ETFS)} Core ETFs!)")
     
     return final_list
 

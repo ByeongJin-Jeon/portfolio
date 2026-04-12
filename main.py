@@ -53,14 +53,14 @@ def main():
     print("💱 Converting full universe to KRW for fair comparison...")
     all_prices_krw, _ = apply_currency_conversion(raw_prices)
 
-    candidate_tickers = filter_candidates(all_prices_krw, raw_volumes, top_n=50)
+    candidate_tickers = filter_candidates(all_prices_krw, raw_volumes)
     filtered_prices = all_prices_krw[candidate_tickers]
     filtered_volumes = raw_volumes[candidate_tickers]
     print(f"✅ Filtered down to top {len(candidate_tickers)} momentum leaders.")
     
     returns = filtered_prices.ffill().pct_change(fill_method=None).dropna()
     returns = returns.clip(lower=-0.3, upper=0.3) 
-    print("⚠️ 극단적 이상치(±30%)를 보정했습니다.")
+    print("⚠️ Corrected outliers (±30%).")
 
     # 2. [Stage 3] 지휘소 가동 (VIX 킬스위치 & 추세 신호)
     q_views, initial_omega, kill_switch_active = compose_bl_inputs(filtered_prices)
