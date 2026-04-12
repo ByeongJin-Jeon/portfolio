@@ -1,7 +1,52 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
 import yfinance as yf
+import FinanceDataReader as fdr
 from config import VIX_KILLSWITCH, VIX_CONFIDENCE_BASE, TIPS_TICKER, SOFR_SAFE_HAVEN
+
+def is_kr_ticker(ticker):
+    return str(ticker)[0].isdigit()
+
+def build_dynamic_segment_map(ticker_list):
+    """Categorize the seleceted tickers to Growth/Value sector"""
+    segment_map = {}
+    
+    kr_sector_dict = {}
+    try:
+        kr_listing = fdr.StockListing('KRX')
+        if 'Sector' in kr_listing.columns:
+            kr_sector_dict = kr_listing.set_index('Code')['Sector'].to_dict()
+    except Exception as e:
+        print(f"⚠️ KRX 업종 데이터 수집 실패: {e}")
+
+    growth_kw = ['소프트웨어', '반도체', 'IT', '바이오', '제약', '게임', '의료', '통신장비', '전자기기']
+    value_kw = ['은행', '금융', '보험', '증권', '건설', '철강', '화학', '에너지', '조선', '유통', '음식료', '지주', '유틸리티']
+    
+    for t in ticker_list:
+        if is_kr_ticker(t):
+            clean_t = "".join([c for c in str(t) if c.isdigit()]).zfill(6)
+            sector_kr = str(kr_sector_dict.get(clean_t, 'Unknown'))
+            
+            if any(k in sector_kr for k in growth_kw):
+                segment_map[t] = 'Growth'
+            elif any(k in sector_kr for k in value_kw):
+                segment_map[t] = 'Value'
+            else:
+                segment_map[t] = 'Unknown'
+                
+        else:
+            try:
+                sector_us = yf.Ticker(t).info.get('sector', 'Unknown')
+                if sector_us in ['Technology', 'Communication Services', 'Consumer Cyclical', 'Healthcare']:
+                    segment_map[t] = 'Growth'
+                elif sector_us in ['Financial Services', 'Energy', 'Utilities', 'Consumer Defensive', 'Real Estate', 'Basic Materials', 'Industrials']:
+                    segment_map[t] = 'Value'
+                else:
+                    segment_map[t] = 'Unknown'
+            except:
+                segment_map[t] = 'Unknown'
+                
+    return segment_map
 
 def get_macro_signals():
     """
@@ -43,14 +88,22 @@ def apply_macro_filters(views, macro_signals):
     
     # If Kill-Switch is active, force rotation to SOFR/Safe Haven
     if macro_signals["kill_switch"]:
+        print("🚨 [KILL-SWITCH]")
         adjusted_views[:] = 0  # Zero out equity views
         if SOFR_SAFE_HAVEN in adjusted_views.index:
             adjusted_views[SOFR_SAFE_HAVEN] = 1.0
             
     # If Real Rates spike, penalize Growth/Agri and reward Quality
     if macro_signals["tilt_to_quality"]:
+        print("🛡️ [QUALITY TILT]")
+        dynamic_segment_map = build_dynamic_segment_map(adjusted_views.index.tolist())
         for asset in adjusted_views.index:
-            # Logic could be linked to your SEGMENT_MAP in config.py
-            pass
+            segment = dynamic_segment_map.get(asset, "Unknown")
+            if segment in ["Growth", "Tech", "IT", "Consumer Discretionary"]:
+                adjusted_views[asset] *= 0.5
+            elif segment in ["Quality", "Value", "Defensive", "Energy", "Financials", "Utilities"]:
+                adjusted_views[asset] *= 1.5
+            else:
+                adjusted_views[asset] *= 0.9
             
     return adjusted_views

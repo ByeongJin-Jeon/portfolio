@@ -35,10 +35,10 @@ def select_final_portfolio(bl_weights, liquidity_caps, kr_floor=0.06):
     # 5. 최종 합체
     final_portfolio = pd.concat([final_kr, final_us]).sort_values(ascending=False)
     
-    return final_portfolio  
+    return final_portfolio
 
 def export_portfolio(weights, path):
     """Outputs the final allocation to terminal and CSV."""
     print("\n--- GEOPOLITICALLY RESILIENT PORTFOLIO (TOP 10) ---")
-    print(weights)
+    print(weights*100)
     weights.to_csv(path, encoding=CSV_ENCODING)
