@@ -86,12 +86,19 @@ def apply_macro_filters(views, macro_signals):
     """
     adjusted_views = views.copy()
     
-    # If Kill-Switch is active, force rotation to SOFR/Safe Haven
-    if macro_signals["kill_switch"]:
-        print("🚨 [KILL-SWITCH]")
-        adjusted_views[:] = 0  # Zero out equity views
-        if SOFR_SAFE_HAVEN in adjusted_views.index:
+    # Global Kill-Switch: Move all assets to cash/bonds
+    if macro_signals.get("global_kill_switch", False):
+        print("🚨 [GLOBAL KILL-SWITCH]")
+        adjusted_views[:] = 0  
+        if SOFR_SAFE_HAVEN in adjusted_views.columns:
             adjusted_views[SOFR_SAFE_HAVEN] = 1.0
+            
+    # KR Kill-Switch: surge USDKRW
+    elif macro_signals.get("kr_kill_switch", False):
+        print("☔️ [FX KILL-SWITCH]")
+        for asset in adjusted_views.columns:
+            if is_kr_ticker(asset):
+                adjusted_views[asset] = 0
             
     # If Real Rates spike, penalize Growth/Agri and reward Quality
     if macro_signals["tilt_to_quality"]:

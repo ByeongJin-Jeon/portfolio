@@ -7,7 +7,7 @@ import urllib.request
 import re
 import FinanceDataReader as fdr
 import unicodedata
-from config import CSV_ENCODING, TICKER_NORM, US_TICKERS
+from config import CSV_ENCODING, TICKER_NORM, US_TICKERS, CORE_ETFS
 
 def is_kr_ticker(ticker):
     """
@@ -176,12 +176,14 @@ def filter_candidates(price_df, volume_df, top_n=50):
     wildcards = remaining.nlargest(20).index.tolist()
     
     final_50 = selected_kr + selected_us + wildcards
+    final_list = list(set(final_50 + CORE_ETFS))
+    final_list = [t for t in final_list if t in price_df.columns]
     
-    # is_kr_ticker를 써서 아주 정확하게 카운팅!
-    print(f"✅ Selected 50: KR({len([t for t in final_50 if is_kr_ticker(t)])}), "
-          f"US({len([t for t in final_50 if not is_kr_ticker(t)])})")
+    print(f"✅ Selected {len(final_list)}: KR({len([t for t in final_50 if is_kr_ticker(t)])}), "
+          f"US({len([t for t in final_50 if not is_kr_ticker(t)])}), "
+          f"(Including Macro Core ETFs!)")
     
-    return final_50
+    return final_list
 
 def apply_currency_conversion(price_df):
     """

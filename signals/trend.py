@@ -23,16 +23,18 @@ def generate_trend_views(prices):
     bull_align = (mas['MA5'] > mas['MA22']) & \
                  (mas['MA22'] > mas['MA60']) & \
                  (mas['MA60'] > mas['MA182'])
-    
+    bull_align_3d = bull_align.rolling(window=3).sum() == 3
+
     # 3. Envelope Filter (Mean Reversion)
-    central_ma = mas[f'MA{ENVELOPE_PERIOD}'] #
-    upper_band = central_ma * (1 + ENVELOPE_BAND) #
+    central_ma = mas[f'MA{ENVELOPE_PERIOD}']
+    upper_band = central_ma * (1 + ENVELOPE_BAND)
     
     # Both 'prices' and 'upper_band' now have the same column labels
     overbought = prices > upper_band
     
     # 4. View Strength Logic
-    views = bull_align.astype(float)
-    views[overbought] *= 0.5 
+    views = pd.DataFrame(0, index=prices.index, columns=prices.columns)
+    views[bull_align_3d] = 1
+    views[overbought] = -1
     
     return views

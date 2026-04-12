@@ -34,6 +34,26 @@ TICKER_NORM    = "NFC"           # unicodedata.normalize form for KRX ticker mat
 PRICE_START    = "2006-01-01"    # enough history for 2008 crisis backtest
 PRICE_END      = None            # None → fetch up to today
 
+# ============================================================
+# CORE MACRO ETFs (Phase 0 — 생존용 근본 방어막)
+# ============================================================
+CORE_ETFS = [
+    # 미국 매크로/섹터 방어막 (2008년 이전 상장 위주)
+    "SPY",   # S&P 500 (시장 베타)
+    "TLT",   # 미국 장기 국채 (위기 시 최고의 우산)
+    "IEF",   # 미국 중기 국채 (안전 자산)
+    "GLD",   # 금 (인플레이션 방패)
+    "DBC",   # 원자재 (공급 충격 방어)
+    "VNQ",   # 미국 리츠/부동산
+    "XLK",   # 기술주 섹터
+    "XLE",   # 에너지 섹터 (MIDEAST 시나리오 하드캐리)
+    "XLV",   # 헬스케어 (방어주)
+    
+    # 한국 매크로 방어막 (그나마 역사 긴 놈들)
+    "069500", # KODEX 200 (한국 시장 베타, 2002년 상장)
+    "114260", # KODEX 국고채3년 (한국 금리 방어)
+    "139260", # TIGER 200 IT (한국 반도체/IT 베타)
+]
 
 # ============================================================
 # SIGNAL PARAMETERS (Phase 1-A — Trend)

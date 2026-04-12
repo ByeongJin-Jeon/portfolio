@@ -4,7 +4,7 @@ import pandas as pd
 import yfinance as yf
 import FinanceDataReader as fdr
 from urllib import request
-from config import KRX_TICKERS, US_TICKERS
+from config import KRX_TICKERS, US_TICKERS, CORE_ETFS
 
 class UniverseManager:
     """S&P 500, Nasdaq 100, Dow Jones, KOSPI 200 요원들 싹 다 모아오기!"""
@@ -54,6 +54,6 @@ class UniverseManager:
         kospi = self.get_kospi_200_tickers()
         # strategic_us = list(US_TICKERS.keys())
         
-        full_list = list(set(sp500 + nasdaq + dow + kospi))
+        full_list = list(set(sp500 + nasdaq + dow + kospi + CORE_ETFS))
         # yfinance 점(.) 표기법 대응 (BRK.B -> BRK-B)
         return [t.replace('.', '-') for t in full_list]

@@ -37,6 +37,10 @@ def compose_bl_inputs(prices):
     vix_trigger = vix_level > 25
     fx_trigger_raw = fx_volatility > 0.03 # 3% 변동성
     fx_trigger = bool(fx_trigger_raw.any())
+
+    # 🚨 [수정 포인트] 킬스위치 독립 운영
+    macro_signals["global_kill_switch"] = bool(base_kill_switch or vix_trigger)
+    macro_signals["kr_kill_switch"] = fx_trigger
     
     # 최종 킬스위치 결정
     combined_kill_switch = bool(base_kill_switch or vix_trigger or fx_trigger)
@@ -45,7 +49,6 @@ def compose_bl_inputs(prices):
     trend_views = generate_trend_views(prices)
     
     # 4. 매크로 필터 적용 (킬스위치 작동 시 주식 비중 Zero화)
-    macro_signals["kill_switch"] = combined_kill_switch
     final_q_views = apply_macro_filters(trend_views, macro_signals)
     
     # 5. 블랙-리터먼 확신도(Omega) 조절

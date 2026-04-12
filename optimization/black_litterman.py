@@ -17,13 +17,9 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
     if len(active_assets) == 0: # Fallback if no signals
         return hrp_weights
         
-    p_matrix = np.zeros((len(tactical_views), len(active_assets)))
-    for i, asset in enumerate(active_assets):
-        p_matrix[i, i] = 1 
-    P = pd.DataFrame(p_matrix, columns=active_assets)
-
+    P = pd.DataFrame(0.0, index=active_assets, columns=returns.columns)
     for asset in active_assets:
-        P.loc[asset, asset] = 1
+        P.loc[asset, asset] = 1.0
         
     # 2. Q Vector (Views)
     Q = tactical_views.loc[active_assets].values.reshape(-1, 1)
@@ -33,16 +29,14 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
     
     # 4. Black-Litterman Setup
     port = rp.Portfolio(returns=returns)
-    port.assets_stats(method_mu='hist', method_cov='hist')
-    
+    port.assets_stats(method_mu='hist', method_cov='ledoit')
+
     port.blacklitterman_stats(
         P=P.values,
         Q=Q,
         rf=RISK_FREE_RATE,
         w=hrp_weights.values.reshape(-1, 1), 
         delta=BL_RISK_AVERSION,
-        tau=BL_TAU,
-        Omega=Omega
     )
     
     # 5. Optimization: Maximize UPI subject to CDaR <= 15%
@@ -60,7 +54,8 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
     
     # Calculate the CDaR of the resulting portfolio
     # Riskfolio returns weights as a DataFrame; we pass them to the risk function
-    current_cdar = rp.RiskFunctions.CDaR_Hist(w_optimized, returns, alpha=CDAR_ALPHA)
+    portfolio_returns = returns @ w_optimized
+    current_cdar = rp.RiskFunctions.CDaR_Abs(X=portfolio_returns, alpha=CDAR_ALPHA)
 
     # Stage 2: Fallback if CDaR exceeds hard limit
     if current_cdar > CDAR_LIMIT:
