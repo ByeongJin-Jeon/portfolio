@@ -43,7 +43,7 @@ class UniverseManager:
         실무에선 FinanceDataReader(fdr.StockListing('KOSPI'))를 쓰는 걸 추천해!
         """
         df = fdr.StockListing('KOSPI')
-        kospi_200 = (df.head(200)['Code'] + '-KS').tolist()
+        kospi_200 = (df.head(200)['Code']).tolist()
         return kospi_200
 
     def get_full_universe(self):
