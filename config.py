@@ -17,7 +17,7 @@ DATA_DIR   = BASE_DIR / "data" / "cache"        # cached price CSVs
 OUTPUT_DIR = BASE_DIR / "outputs"
 LOG_DIR    = BASE_DIR / "logs"
 
-for _dir in [DATA_DIR, OUTPUT_DIR, LOG_DIR]:
+for _dir in [DATA_DIR, OUTPUT_DIR]:
     _dir.mkdir(parents=True, exist_ok=True)
 
 

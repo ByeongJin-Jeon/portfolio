@@ -38,20 +38,38 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
     all_prices = []
     all_volumes = []
 
-    # 1. 🇰🇷 한국 종목 수집 (FinanceDataReader - 빠르고 정확함)
-    print(f"🇰🇷 Fetching {len(kr_tickers)} KRX assets via FDR...")
-    for ticker in kr_tickers:
+    # 1. 🇰🇷 한국 종목 수집 (yfinance - 청킹 적용)
+    print(f"🇰🇷 Fetching {len(kr_tickers)} KRX assets via yfinance (Chunks of {chunk_size})...")
+    
+    kr_mapping = {}
+    kr_yf_tickers = []
+
+    for t in kr_tickers:
+        clean_code = t.split('-')[0]
+        yf_code = f"{clean_code}.KS"
+        kr_mapping[yf_code] = clean_code
+        kr_yf_tickers.append(yf_code)
+
+    for i in range(0, len(kr_yf_tickers), chunk_size):
+        chunk = kr_yf_tickers[i:i + chunk_size]
         try:
-            clean_code = ticker.split('-')[0]
-            df = fdr.DataReader(clean_code, start_date, end_date)
-            if not df.empty:
-                # 컬럼명을 yfinance와 맞추기 위해 티커명으로 변경
-                price_ser = df['Close'].rename(clean_code)
-                vol_ser = df['Volume'].rename(clean_code)
-                all_prices.append(price_ser)
-                all_volumes.append(vol_ser)
+            data = yf.download(chunk, start=start_date, end=end_date, auto_adjust=True, progress=False)
+            if not data.empty:
+                price_df = data['Close']
+                vol_df = data['Volume']
+                
+                if isinstance(price_df, pd.Series):
+                    price_df = price_df.to_frame(name=chunk[0])
+                    vol_df = vol_df.to_frame(name=chunk[0])
+                
+                price_df = price_df.rename(columns=kr_mapping)
+                vol_df = vol_df.rename(columns=kr_mapping)
+                
+                all_prices.append(price_df)
+                all_volumes.append(vol_df)
+            time.sleep(1.5)
         except Exception as e:
-            print(f"⚠️ KR Ticker {ticker} failed: {e}")
+            print(f"⚠️ KR Chunk starting {chunk[0]} failed: {e}")
 
     # 2. 🇺🇸 미국 종목 수집 (yfinance - 청킹 & 슬립 적용)
     print(f"🇺🇸 Fetching {len(us_tickers)} US assets via yfinance (Chunks of {chunk_size})...")
@@ -136,7 +154,7 @@ def filter_candidates(price_df, volume_df):
     window = min(60, len(price_df) - 1)
     if window > 0:
         # 일간 수익률의 표준편차 = 변동성 (Volatility)
-        returns = price_df.pct_change().tail(window)
+        returns = price_df.ffill().pct_change(fill_method=None).tail(window)
         volatility = returns.std()
         volatility = volatility.replace(0, 0.0001) # 0으로 나누기 방지
         
