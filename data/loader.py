@@ -38,7 +38,6 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
     all_prices = []
     all_volumes = []
 
-    # 1. 🇰🇷 한국 종목 수집 (yfinance - 청킹 적용)
     print(f"🇰🇷 Fetching {len(kr_tickers)} KRX assets via yfinance (Chunks of {chunk_size})...")
     
     kr_mapping = {}
@@ -71,7 +70,6 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
         except Exception as e:
             print(f"⚠️ KR Chunk starting {chunk[0]} failed: {e}")
 
-    # 2. 🇺🇸 미국 종목 수집 (yfinance - 청킹 & 슬립 적용)
     print(f"🇺🇸 Fetching {len(us_tickers)} US assets via yfinance (Chunks of {chunk_size})...")
     for i in range(0, len(us_tickers), chunk_size):
         chunk = us_tickers[i:i + chunk_size]
@@ -80,15 +78,13 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
             if not data.empty:
                 all_prices.append(data['Close'])
                 all_volumes.append(data['Volume'])
-            time.sleep(1.5) # 야후 형님 눈치 보기
+            time.sleep(1.5)
         except Exception as e:
             print(f"⚠️ US Chunk starting {chunk[0]} failed: {e}")
 
-    # 3. 데이터 통합
     full_prices = pd.concat(all_prices, axis=1)
     full_volumes = pd.concat(all_volumes, axis=1)
     
-    # 중복 제거 및 날짜 정렬
     full_prices = full_prices.loc[:, ~full_prices.columns.duplicated()].sort_index()
     full_volumes = full_volumes.loc[:, ~full_volumes.columns.duplicated()].sort_index()
 
@@ -98,9 +94,8 @@ def get_naver_pbr(ticker):
     """
     야후 파이낸스가 버린 한국 종목 PBR을 네이버 금융에서 직접 긁어옴
     """
-    # 1. 00680K 같은 우선주 티커에서 알파벳 제거 (숫자 6자리만 추출)
     clean_ticker = "".join([c for c in str(ticker) if c.isdigit()])
-    clean_ticker = clean_ticker.zfill(6) # 5930 -> 005930 포맷 맞추기
+    clean_ticker = clean_ticker.zfill(6)
 
     url = f"https://finance.naver.com/item/main.naver?code={clean_ticker}"
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -109,12 +104,10 @@ def get_naver_pbr(ticker):
         with urllib.request.urlopen(req, timeout=3) as response:
             html = response.read().decode('euc-kr', errors='ignore')
             
-            # 네이버 금융 HTML에서 id="_pbr" 태그 안의 숫자만 쏙 빼오기
             match = re.search(r'id="_pbr">([\d\.]+)</em>', html)
             if match:
                 return float(match.group(1))
             
-            # 혹시 태그가 다를 경우를 대비한 플랜 B (PBR 글자 근처의 텍스트 탐색)
             match_b = re.search(r'PBR.*?<em>([\d\.]+)</em>', html, re.DOTALL)
             if match_b:
                 return float(match_b.group(1))
@@ -131,16 +124,13 @@ def fetch_pbr_data(ticker_list):
     kr_tickers = [t for t in ticker_list if is_kr_ticker(t)]
     us_tickers = [t for t in ticker_list if not is_kr_ticker(t)]
 
-    # 1. 🇰🇷 한국 시장 소속 판별 (FDR을 '안내데스크'로 활용)
     for t in kr_tickers:
         pbr = get_naver_pbr(t)
         pbr_map[t] = pbr
 
-    # 2. 🇺🇸 미국 PBR (yfinance)
     for t in us_tickers:
         try:
             ticker_obj = yf.Ticker(t)
-            # info에서 가져오되, 없으면 nan
             pbr = ticker_obj.info.get('priceToBook', np.nan)
             pbr_map[t] = pbr
         except Exception as e:
@@ -150,41 +140,32 @@ def fetch_pbr_data(ticker_list):
 
 def filter_candidates(price_df, volume_df):
     """6M 유동성 + Sharpe 모멘텀 + 저변동성 필터"""
-    # 1. 최근 60일(약 3개월) 모멘텀 및 변동성 계산
     window = min(60, len(price_df) - 1)
     if window > 0:
-        # 일간 수익률의 표준편차 = 변동성 (Volatility)
         returns = price_df.ffill().pct_change(fill_method=None).tail(window)
         volatility = returns.std()
-        volatility = volatility.replace(0, 0.0001) # 0으로 나누기 방지
+        volatility = volatility.replace(0, 0.0001)
         
-        # 60일 수익률 = 모멘텀 (Momentum)
         momentum = (price_df.iloc[-1] / price_df.iloc[-(window+1)]) - 1
         
-        # Quality Score = 모멘텀 / 변동성 (단기 샤프비율 느낌!)
         quality_score = momentum / volatility
     else:
         quality_score = pd.Series(1, index=price_df.columns)
 
-    # 2. 거래대금 계산 (최근 20일 평균 거래량 * 가격)
     avg_volume = volume_df.tail(20).mean()
     avg_price = price_df.tail(20).mean()
     dollar_volume = avg_volume * avg_price
 
-    # 3. 한국/미국 유니버스 분리
     is_kr = pd.Series(dollar_volume.index.map(is_kr_ticker), index=dollar_volume.index)
     kr_universe = dollar_volume[is_kr]
     us_universe = dollar_volume[~is_kr]
 
-    # 4. [1차 예선] 일단 돈 많은(유동성 상위) 50명씩 추림
     top_kr_liquid = kr_universe.nlargest(50).index
     top_us_liquid = us_universe.nlargest(50).index
 
-    # 5. [2차 본선] 그 50명 중에서 'Quality Score'가 높은 최정예 15명씩 선발!
     selected_kr = quality_score.reindex(top_kr_liquid).nlargest(15).index.tolist()
     selected_us = quality_score.reindex(top_us_liquid).nlargest(15).index.tolist()
 
-    # 패자부활전: 남은 애들 중에 퀄리티 좋은 20명 추가 (Wildcards)
     remaining_liquid = list(set(top_kr_liquid.tolist() + top_us_liquid.tolist()) - set(selected_kr + selected_us))
     wildcards = quality_score.reindex(remaining_liquid).nlargest(20).index.tolist()
 
@@ -204,16 +185,13 @@ def apply_currency_conversion(price_df):
     Identifies US tickers and converts their prices to KRW.
     Ensures that volatility and drawdowns include the FX impact.
     """
-    # 1. Fetch USD/KRW spot rate for the price_df timeline
     start_date = price_df.index.min()
     end_date = price_df.index.max()
     
     fx_data = yf.download("USDKRW=X", start=start_date, end=end_date, auto_adjust=True)['Close'].squeeze()
     
-    # 2. Align FX dates with Price dates (handle holidays/weekends)
     fx_data = fx_data.reindex(price_df.index).ffill().bfill()
     
-    # 3. Convert US-listed prices to KRW
     converted_df = price_df.copy()
     for ticker in converted_df.columns:
         if not str(ticker)[0].isdigit():

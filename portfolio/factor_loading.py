@@ -8,7 +8,7 @@ from config import FF_LIBRARY, FF_REGRESSION_WINDOW, RISK_FREE_RATE
 def fetch_ff_factors():
     """Fetches the latest daily 5-factor data from the French library."""
     ds = web.DataReader(FF_LIBRARY, 'famafrench', start='2020-01-01')[0]
-    return ds / 100.0  # Convert percentages to decimals
+    return ds / 100.0
 
 def calculate_idiosyncratic_risk(asset_returns):
     """
@@ -17,7 +17,6 @@ def calculate_idiosyncratic_risk(asset_returns):
     """
     ff_factors = fetch_ff_factors()
     
-    # Align dates between returns and factors
     data = pd.concat([asset_returns, ff_factors], axis=1).dropna()
     
     idiosyncratic_vars = {}
@@ -27,7 +26,6 @@ def calculate_idiosyncratic_risk(asset_returns):
     X = sm.add_constant(data[factors])
     
     for asset in asset_returns.columns:
-        # Excess returns
         y = data[asset] - data['RF']
         
         # Rolling regression or full-window regression

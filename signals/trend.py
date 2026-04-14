@@ -9,7 +9,7 @@ def generate_trend_views(prices):
     """
     # 1. Calculate Moving Averages and Force Column Alignment
     mas = {}
-    for p in MA_PERIODS: #
+    for p in MA_PERIODS:
         ma_df = vbt.MA.run(prices, p).ma
         
         # vectorbt adds the window 'p' as a top-level column index.
@@ -29,7 +29,6 @@ def generate_trend_views(prices):
     central_ma = mas[f'MA{ENVELOPE_PERIOD}']
     upper_band = central_ma * (1 + ENVELOPE_BAND)
     
-    # Both 'prices' and 'upper_band' now have the same column labels
     overbought = prices > upper_band
     
     # 4. View Strength Logic

@@ -33,7 +33,6 @@ from backtest.engine import ResilientBacktester, run_scenario_backtest
 from evaluation.metrics import calculate_resilience_suite
 
 def main():
-    # 1. 데이터 로드 및 통화 변환 (KRW 기준)
     um = UniverseManager()
     full_ticker_list = um.get_full_universe()
     print(f"🛰️ Scanned {len(full_ticker_list)} potential candidates globally.")
@@ -49,7 +48,6 @@ def main():
     raw_prices = load_from_cache(price_path)
     raw_volumes = load_from_cache(volume_path)
     
-    # [Stage 2] 정예 50인 필터링
     print("💱 Converting full universe to KRW for fair comparison...")
     all_prices_krw, _ = apply_currency_conversion(raw_prices)
 
@@ -59,24 +57,20 @@ def main():
     print(f"✅ Filtered down to top {len(candidate_tickers)} momentum leaders.")
     
     returns = filtered_prices.ffill().pct_change(fill_method=None).dropna()
-    returns = returns.clip(lower=-0.3, upper=0.3) 
-    print("⚠️ Corrected outliers (±30%).")
+    # returns = returns.clip(lower=-0.3, upper=0.3) 
+    # print("⚠️ Corrected outliers (±30%).")
 
-    # 2. [Stage 3] 지휘소 가동 (VIX 킬스위치 & 추세 신호)
     q_views, initial_omega, kill_switch_active = compose_bl_inputs(filtered_prices)
 
-    # 3. 최적화 엔진: HRP(뼈대) + Black-Litterman(전망)
     idio_risk = calculate_idiosyncratic_risk(returns)
     hrp_prior = get_hrp_prior_weights(returns)
     bl_port = construct_bl_model(returns, hrp_prior, q_views, idio_risk)
 
-    # 4. 제약 조건 및 최종 TOP 10 선정
     liquidity_caps = calculate_liquidity_caps(filtered_volumes, filtered_prices, BACKTEST_INITIAL_CAPITAL)
     final_weights = select_final_portfolio(bl_port, liquidity_caps)
     
     export_portfolio(final_weights, "outputs/final_weights.csv")
 
-    # 5. [Stage 4] 백테스트 & 성적표 출력
     print("\n📊 Running 'MIDEAST_2026' Resilience Simulation...")
     backtester = ResilientBacktester(all_prices_krw)
     
@@ -86,12 +80,10 @@ def main():
     print("🏆 FINAL MULTI-SCENARIO RESILIENCE REPORT 🏆")
     print("="*60)
     
-    # 탄력성 지표 계산 (MDD, Ulcer Index 등)
     for scenario_name, pf_result in all_results.items():
         if pf_result is None:
             print(f"\n[Scenario: {scenario_name}] - No data available, skipping report.")
             continue
-        # 시나리오별 탄력성 지표 계산
         stats = calculate_resilience_suite(pf_result)
         
         print(f"\n[Scenario: {scenario_name}]")

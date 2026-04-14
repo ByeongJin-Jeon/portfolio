@@ -4,18 +4,14 @@ from config import MAX_ASSETS, CSV_ENCODING
 
 def select_final_portfolio(bl_weights, liquidity_caps, kr_floor=0.06):
     """Applies liquidity caps and selects the Top 10 assets globally based on optimized weight."""
-    # 1. 형식 변환
     weights = bl_weights.iloc[:, 0] if isinstance(bl_weights, pd.DataFrame) else bl_weights.copy()
 
-    # 2. 유동성 제약 적용
     for asset in weights.index:
         if asset in liquidity_caps.index:
             weights.loc[asset] = min(float(weights.loc[asset]), float(liquidity_caps.loc[asset]))
-
-    # 3. 글로벌 상위 10개(MAX_ASSETS) 무한 경쟁!
+    
     top_assets = weights.nlargest(MAX_ASSETS)
 
-    # 4. 비중 재조정 (선택된 10개로 다시 100% 채우기)
     final_portfolio = top_assets / top_assets.sum()
     
     return final_portfolio
