@@ -4,11 +4,9 @@ import pandas as pd
 import yfinance as yf
 import FinanceDataReader as fdr
 from urllib import request
-from config import KRX_TICKERS, US_TICKERS, CORE_ETFS
+from config import CORE_ETFS
 
-class UniverseManager:
-    """S&P 500, Nasdaq 100, Dow Jones, KOSPI 200 요원들 싹 다 모아오기!"""
-    
+class UniverseManager:   
     @staticmethod
     def get_sp500_tickers():
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'

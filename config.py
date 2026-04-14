@@ -79,61 +79,17 @@ TIPS_TICKER         = "TIP"   # iShares TIPS Bond ETF as real-rate proxy
 SOFR_SAFE_HAVEN     = "SGOV"  # rotate here during VIX kill-switch (US equiv)
                                # KRX equivalent: "ACE SOFR ETF" (229200.KS)
 
+Q_WEIGHTS           = {
+                        'trend': 0.2,
+                        'fundamental': 0.4,
+                        'alpha': 0.2,
+                        'skew': 0.2
+                      }
+
 
 # ============================================================
 # ASSET UNIVERSE (Phase 3 — Multi-Asset Barbell Strategy)
 # ============================================================
-
-# --- Strategic KRX Holdings ---
-KRX_TICKERS = {
-    # Equity: Defensive Alpha (Defense)
-    "012450.KS": "한화에어로스페이스",      # Hanwha Aerospace
-    "079550.KS": "LIG넥스원",             # LIG Nex1
-
-    # Equity: Supply Chain (Shipbuilding / Energy)
-    "329180.KS": "HD현대중공업",           # HD Hyundai Heavy Industries
-
-    # Equity: Safe Haven (Base Metals / Gold proxy)
-    "010130.KS": "고려아연",               # Korea Zinc
-
-    # Equity: Core / Liquid
-    "005930.KS": "삼성전자",               # Samsung Electronics
-
-    # Fixed Income & Cash (The Shields)
-    "148070.KS": "국고채10년 ETF",          # K-Treasury 10Y (Bond)
-    "455030.KS": "KODEX SOFR금리액티브",    # K-Cash (SOFR/Cash)
-}
-
-# --- Strategic US Holdings ---
-US_TICKERS = {
-    # Equity: Defensive Alpha (Quality)
-    "MSFT":   "Microsoft",
-    "AAPL":   "Apple",
-
-    # Equity: Supply Chain (Energy & Agri)
-    "OXY":    "Occidental Petroleum",      # Oil (Buffett's pick)
-    "ADM":    "Archer-Daniels-Midland",    # Food Security
-    "CTVA":   "Corteva",                   # Agri-Science
-
-    # Alternatives: Safe Haven (Gold & Commodities)
-    "GLD":    "SPDR Gold Shares",          # Physical Gold
-    "DBC":    "Invesco DB Commodity",      # Broad Commodities
-    "NEM":    "Newmont",                   # Gold Miner
-    "GOLD":   "Barrick Gold",              # Gold Miner
-
-    # Equity: Core / Liquid (Consumer Staples)
-    "JNJ":    "Johnson & Johnson",
-    "PG":     "Procter & Gamble",
-
-    # Fixed Income & Cash (The Shields)
-    "TLT":    "20+ Yr Treasury Bond",      # Long-term Bond
-    "IEF":    "7-10 Yr Treasury Bond",     # Mid-term Bond
-    "SGOV":   "0-3 Month Treasury Bill",   # US-Cash (T-Bill)
-}
-
-# Combined flat list for yfinance bulk download
-ALL_STRATEGIC_TICKERS = list(KRX_TICKERS.keys()) + list(US_TICKERS.keys())
-
 # Segment mapping for HRP risk-block clustering
 SEGMENT_MAP = {
     # KRX

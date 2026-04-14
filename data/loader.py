@@ -7,12 +7,11 @@ import urllib.request
 import re
 import FinanceDataReader as fdr
 import unicodedata
-from config import CSV_ENCODING, TICKER_NORM, US_TICKERS, CORE_ETFS
+from config import CSV_ENCODING, TICKER_NORM, CORE_ETFS
 
 def is_kr_ticker(ticker):
     """
-    한국 종목은 '무조건' 첫 글자가 숫자(0~9)로 시작함.
-    미국 종목은 알파벳으로 시작함.
+    KOSPI tickers always start with digits
     """
     return str(ticker)[0].isdigit()
 
@@ -31,7 +30,6 @@ def load_from_cache(filename):
     return df
 
 def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
-    """하이브리드 수집기: 한국(FDR) + 미국(yf Chunking) 통합"""
     kr_tickers = [t for t in ticker_list if is_kr_ticker(t)]
     us_tickers = [t for t in ticker_list if not is_kr_ticker(t)]
 
@@ -92,7 +90,7 @@ def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
 
 def get_naver_pbr(ticker):
     """
-    야후 파이낸스가 버린 한국 종목 PBR을 네이버 금융에서 직접 긁어옴
+    Get PBR data of korean stocks from NAVER
     """
     clean_ticker = "".join([c for c in str(ticker) if c.isdigit()])
     clean_ticker = clean_ticker.zfill(6)
@@ -139,7 +137,7 @@ def fetch_pbr_data(ticker_list):
     return pd.Series(pbr_map)
 
 def filter_candidates(price_df, volume_df):
-    """6M 유동성 + Sharpe 모멘텀 + 저변동성 필터"""
+    """6M liquidity + Sharpe momentum + low-volatility filter"""
     window = min(60, len(price_df) - 1)
     if window > 0:
         returns = price_df.ffill().pct_change(fill_method=None).tail(window)

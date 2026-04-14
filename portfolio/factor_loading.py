@@ -35,3 +35,29 @@ def calculate_idiosyncratic_risk(asset_returns):
         idiosyncratic_vars[asset] = model.resid.var()
         
     return pd.Series(idiosyncratic_vars)
+
+def extract_idiosyncratic_alpha(asset_returns, ff_factors):
+    """
+    Extracts 'Inherent Ascent Power (Alpha)' that is not explained by the FF5 factor.
+    """  
+    data = pd.concat([asset_returns, ff_factors], axis=1).dropna()
+    factors = ['Mkt-RF', 'SMB', 'HML', 'RMW', 'CMA']
+    X = sm.add_constant(data[factors])
+    
+    alpha_views = pd.Series(0.0, index=asset_returns.columns)
+    
+    for asset in asset_returns.columns:
+        y = data[asset] - data['RF']
+        model = sm.OLS(y, X).fit()
+        
+        # Confirmation of residual momentum over the past 20 days
+        recent_residuals = model.resid.tail(20)
+        
+        # If the mean of the residuals is positive (+) 
+        # and the t-statistic is significant, it is true alpha.
+        if recent_residuals.mean() > 0:
+            alpha_views[asset] = 1.0
+        elif recent_residuals.mean() < 0:
+            alpha_views[asset] = -1.0
+            
+    return alpha_views
