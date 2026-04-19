@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 import riskfolio as rp
-from config import BL_TAU, BL_RISK_AVERSION, RISK_FREE_RATE, CDAR_LIMIT, CDAR_ALPHA
+from config import BL_TAU, BL_RISK_AVERSION, RM_METHOD, RISK_FREE_RATE, CDAR_LIMIT, CDAR_ALPHA
 
 def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars):
     """
@@ -38,33 +38,50 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
         w=hrp_weights.values.reshape(-1, 1), 
         delta=BL_RISK_AVERSION,
     )
+
+    port.cov_bl = port.cov_bl + pd.DataFrame(
+        np.eye(port.cov_bl.shape[0]) * 1e-6, 
+        index=port.cov_bl.index, 
+        columns=port.cov_bl.columns
+    )
     
     # 5. Optimization: Maximize UPI subject to CDaR <= 15%
     # In Riskfolio, 'Sharpe' + rm='CDaR' maximizes the Ulcer Performance Index
 
     # Stage 1: Attempt to Maximize UPI (Return/CDaR)
     port.alpha = CDAR_ALPHA
+    port.upperCDaR = CDAR_LIMIT
+    port.upperlng = 0.15
+
     w_optimized = port.optimization(
         model='BL', 
-        rm='CDaR', 
-        obj='Sharpe', 
-        rf=RISK_FREE_RATE, 
+        rm=RM_METHOD, 
+        obj='Sharpe',
+        rf=RISK_FREE_RATE,
         hist=True
     )
     
-    # Calculate the CDaR of the resulting portfolio
-    # Riskfolio returns weights as a DataFrame; we pass them to the risk function
-    portfolio_returns = returns @ w_optimized
-    current_cdar = rp.RiskFunctions.CDaR_Abs(X=portfolio_returns, alpha=CDAR_ALPHA)
-
-    # Stage 2: Fallback if CDaR exceeds hard limit
-    if current_cdar > CDAR_LIMIT:
-        print(f"⚠️ CDaR breach detected ({current_cdar:.2%}). Switching to MinRisk objective.")
+    # If the solver fails to find a solution satisfying both max Sharpe and the CDaR limit:
+    if w_optimized is None or w_optimized.empty:
+        print(f"[WARNING] Solver failed! Impossible to maximize Sharpe while keeping CDaR <= {CDAR_LIMIT*100:.0f}%.")
+        print("[FALLBACK] Survival comes first! Removing CDaR limit and switching to MinRisk objective.")
+        
+        port.upperCDaR = None # Remove the strict CDaR limit to give the solver breathing room
+        
         w_optimized = port.optimization(
             model='BL',
             rm='CDaR',
-            obj='MinRisk', # Force the safest possible allocation
-            hist=True
+            obj='MinRisk',    # Go all-in on defense (Minimize Risk)
+            rf=0,
+            hist=True,
+            solver='ECOS'
         )
+        
+        # If it still fails, deploy the last resort: HRP weights
+        if w_optimized is None or w_optimized.empty:
+             print("[CRITICAL] 2nd optimization failed! Deploying HRP weights as the last resort.")
+             w_optimized = hrp_weights
+    else:
+        print(f"[SUCCESS] Optimization completed! (Objective: Max Sharpe, CDaR Limit: {CDAR_LIMIT*100:.0f}%)")
     
     return w_optimized

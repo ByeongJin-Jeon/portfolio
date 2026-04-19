@@ -42,6 +42,7 @@ CORE_ETFS = [
     "SPY",   # S&P 500 (시장 베타)
     "TLT",   # 미국 장기 국채 (위기 시 최고의 우산)
     "IEF",   # 미국 중기 국채 (안전 자산)
+    "SHV",   # 미국 단기채 (안전 자산)
     "GLD",   # 금 (인플레이션 방패)
     "DBC",   # 원자재 (공급 충격 방어)
     "VNQ",   # 미국 리츠/부동산
@@ -70,10 +71,11 @@ MIN_SIGNAL_STRENGTH = 0.25            # i.e., at least 1 of 4 MA conditions met
 # ============================================================
 # MACRO RISK FILTERS (Phase 1-B — McGee TAA)
 # ============================================================
-VIX_KILLSWITCH     = 25.0     # if VIX ≥ this, reduce equity beta
+VIX_KILLSWITCH     = 30.0     # if VIX ≥ this, reduce equity beta
 VIX_CONFIDENCE_BASE = 20.0    # VIX level at which the Omega scalar = 1.0
                                # above this, confidence linearly decays:
                                # scalar = 1 + max(0, (VIX - 20) / 20)
+FX_KILLSWITCH_LIMIT = 0.05     # if fx_volatility ≥ this, move all assets to dollar
 
 TIPS_TICKER         = "TIP"   # iShares TIPS Bond ETF as real-rate proxy
 SOFR_SAFE_HAVEN     = "SGOV"  # rotate here during VIX kill-switch (US equiv)
@@ -131,9 +133,10 @@ HRP_DISTANCE_METRIC = "pearson"       # correlation → distance conversion
 BL_RISK_AVERSION    = 2.5             # δ (delta): market risk-aversion coefficient
 BL_TAU              = 0.05            # τ (tau): scales uncertainty of prior
                                        # rule-of-thumb: 1/T where T = sample length
+RM_METHOD           = "CVaR"          # In Riskfolio, 'Sharpe' + 'rm' maximizes the Ulcer Performance Index
 
 # CDaR / UPI
-CDAR_ALPHA          = 0.95            # CVaR / CDaR confidence level
+CDAR_ALPHA          = 0.05            # CVaR / CDaR confidence level
 CDAR_LIMIT          = 0.15            # hard constraint: CDaR ≤ 15 %
 RISK_FREE_RATE      = 0.04            # annualized (used in UPI & Calmar)
 
@@ -143,7 +146,7 @@ RISK_FREE_RATE      = 0.04            # annualized (used in UPI & Calmar)
 # ============================================================
 MAX_ASSETS          = 10              # final portfolio: top-N by weight
 MIN_WEIGHT          = 0.01            # floor: 1 % per asset
-MAX_WEIGHT_SINGLE   = 0.30            # ceiling: 30 % per asset
+MAX_WEIGHT_SINGLE   = 0.50            # ceiling: 30 % per asset
 LIQUIDITY_WINDOW    = 20              # days for avg-volume weight cap
 
 

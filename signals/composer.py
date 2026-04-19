@@ -6,13 +6,13 @@ from signals.fundamental import generate_fundamental_views
 from signals.options_skew import generate_options_skew_views
 from signals.macro import get_macro_signals, apply_macro_filters
 from portfolio.factor_loading import fetch_ff_factors, extract_idiosyncratic_alpha
-from config import Q_WEIGHTS
+from config import Q_WEIGHTS, VIX_KILLSWITCH, FX_KILLSWITCH_LIMIT
 
 def compose_bl_inputs(prices):
     print("📡 Orchestrating Tactical Signals with FX Watchdog...")
 
     tickers = prices.columns.tolist()
-    returns = prices.pct_change().dropna()
+    returns = prices.pct_change(fill_method=None).dropna()
 
     print(f"1️⃣  Technical Trends ({Q_WEIGHTS['trend'] * 100}% weight)")
     Q_trend = generate_trend_views(prices)
@@ -59,8 +59,8 @@ def compose_bl_inputs(prices):
     fx_volatility = (recent_fx.max() / recent_fx.min()) - 1
     fx_volatility = fx_volatility['USDKRW=X']
 
-    vix_trigger = vix_level > 25
-    fx_trigger_raw = fx_volatility > 0.03
+    vix_trigger = vix_level > VIX_KILLSWITCH
+    fx_trigger_raw = fx_volatility > FX_KILLSWITCH_LIMIT
     fx_trigger = bool(fx_trigger_raw.any())
 
     macro_signals["global_kill_switch"] = bool(base_kill_switch or vix_trigger)
