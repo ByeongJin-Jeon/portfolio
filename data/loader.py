@@ -7,7 +7,7 @@ import urllib.request
 import re
 import FinanceDataReader as fdr
 import unicodedata
-from config import CSV_ENCODING, TICKER_NORM, CORE_ETFS
+from config import CSV_ENCODING, TICKER_NORM, CORE_ETFS, DEFENSIVE_ETFS
 
 def is_kr_ticker(ticker):
     """
@@ -169,12 +169,12 @@ def filter_candidates(price_df, volume_df):
 
     final_50 = selected_kr + selected_us + wildcards
 
-    final_list = list(set(final_50 + CORE_ETFS))
+    final_list = list(set(final_50 + CORE_ETFS + DEFENSIVE_ETFS))
     final_list = [t for t in final_list if t in price_df.columns]
 
     print(f"✅ Selected {len(final_list)}: KR({len([t for t in final_50 if is_kr_ticker(t)])}), "
           f"US({len([t for t in final_50 if not is_kr_ticker(t)])}), "
-          f"(Including {len(CORE_ETFS)} Core ETFs!)")
+          f"(Including {len(CORE_ETFS)} Core ETFs and {len(DEFENSIVE_ETFS)} Defensive ETFs!)")
     
     return final_list
 

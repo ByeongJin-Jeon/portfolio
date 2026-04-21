@@ -20,20 +20,30 @@ def generate_trend_views(prices):
         mas[f"MA{p}"] = ma_df
 
     # 2. Alignment Logic: Now identically labeled, so comparison works
-    bull_align = (mas['MA5'] > mas['MA22']) & \
-                 (mas['MA22'] > mas['MA60']) & \
-                 (mas['MA60'] > mas['MA182'])
-    bull_align_3d = bull_align.rolling(window=3).sum() == 3
+    bull_align = (mas['MA5'] > mas['MA22']) & (mas['MA22'] > mas['MA60'])
+    bear_align = (mas['MA5'] < mas['MA22']) & (mas['MA22'] < mas['MA60'])
 
-    # 3. Envelope Filter (Mean Reversion)
+    # 3. Golden/Dead cross with MA5 and MA22
+    golden_cross = (mas['MA5'] > mas['MA22']) & (mas['MA5'].shift(1) <= mas['MA22'].shift(1))
+    dead_cross = (mas['MA5'] < mas['MA22']) & (mas['MA5'].shift(1) >= mas['MA22'].shift(1))
+
+    # 4. Envelope Filter (Mean Reversion)
     central_ma = mas[f'MA{ENVELOPE_PERIOD}']
     upper_band = central_ma * (1 + ENVELOPE_BAND)
+    lower_band = central_ma * (1 - ENVELOPE_BAND)
     
     overbought = prices > upper_band
+    oversold = prices < lower_band
     
     # 4. View Strength Logic
-    views = pd.DataFrame(0, index=prices.index, columns=prices.columns)
-    views[bull_align_3d] = 1
-    views[overbought] = -1
+    views = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    views += bull_align.astype(float) * 1.0
+    views += bear_align.astype(float) * -1.0
+
+    views += golden_cross.astype(float) * 0.5
+    views += dead_cross.astype(float) * -0.5
+
+    views += overbought.astype(float) * -1.0
+    views += oversold.astype(float) * 1.0
     
     return views

@@ -24,6 +24,7 @@ vectorbt>=0.26.1
 yfinance>=0.2.40              # VIX (^VIX), TIPS ETF (TIP) via yfinance
 
 # --- Utilities ---
+html5lib>=1.1                 # HTML parser for pandas.read_html
 unicodedata2>=15.1.0          # NFC normalization for Korean tickers
 tqdm>=4.66.0                  # Progress bars for data fetching loops
 python-dotenv>=1.0.0          # .env for API keys if needed later

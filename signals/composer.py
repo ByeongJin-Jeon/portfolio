@@ -6,7 +6,7 @@ from signals.fundamental import generate_fundamental_views
 from signals.options_skew import generate_options_skew_views
 from signals.macro import get_macro_signals, apply_macro_filters
 from portfolio.factor_loading import fetch_ff_factors, extract_idiosyncratic_alpha
-from config import Q_WEIGHTS, VIX_KILLSWITCH, FX_KILLSWITCH_LIMIT
+from config import Q_WEIGHTS, VIX_KILLSWITCH, FX_KILLSWITCH_LIMIT, DEFENSIVE_ETFS
 
 def compose_bl_inputs(prices):
     print("📡 Orchestrating Tactical Signals with FX Watchdog...")
@@ -69,6 +69,23 @@ def compose_bl_inputs(prices):
     combined_kill_switch = bool(base_kill_switch or vix_trigger or fx_trigger)
     
     final_q_views = apply_macro_filters(final_raw_q, macro_signals)
+
+    print("\n🛡️ Applying Tactical Penalties to Defensive ETFs...")
+    def clean_ticker(t):
+        return str(t).split('.')[0]
+    
+    for ticker in final_q_views.index:
+        clean_t = clean_ticker(ticker)
+        if clean_t in DEFENSIVE_ETFS:
+            if not combined_kill_switch:
+                # Risk-On
+                final_q_views[ticker] = -2.0
+                print(f"   [Risk-On] {ticker} (ETF): Apply -2.0")
+            else:
+                # Risk-Off
+                final_q_views[ticker] = 2.0
+                print(f"   🚨 [Risk-Off] {ticker} (ETF): Apply +2.0")
+    print("============================================================\n")
     
     vix_scalar = macro_signals.get("vix_scalar", 1.0)
     initial_omega = pd.Series(1.0 * vix_scalar, index=final_q_views.index)

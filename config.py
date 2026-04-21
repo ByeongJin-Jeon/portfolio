@@ -40,10 +40,6 @@ PRICE_END      = None            # None → fetch up to today
 CORE_ETFS = [
     # 미국 매크로/섹터 방어막 (2008년 이전 상장 위주)
     "SPY",   # S&P 500 (시장 베타)
-    "TLT",   # 미국 장기 국채 (위기 시 최고의 우산)
-    "IEF",   # 미국 중기 국채 (안전 자산)
-    "SHV",   # 미국 단기채 (안전 자산)
-    "GLD",   # 금 (인플레이션 방패)
     "DBC",   # 원자재 (공급 충격 방어)
     "VNQ",   # 미국 리츠/부동산
     "XLK",   # 기술주 섹터
@@ -52,8 +48,20 @@ CORE_ETFS = [
     
     # 한국 매크로 방어막 (그나마 역사 긴 놈들)
     "069500", # KODEX 200 (한국 시장 베타, 2002년 상장)
-    "114260", # KODEX 국고채3년 (한국 금리 방어)
     "139260", # TIGER 200 IT (한국 반도체/IT 베타)
+]
+
+DEFENSIVE_ETFS = [
+    # 미국 찐 방어막
+    "TLT",   # 미국 장기 국채
+    "IEF",   # 미국 중기 국채
+    "SHV",   # 미국 단기채 (초안전)
+    "SGOV",  # 달러 현금성
+    "GLD",   # 금
+    # 한국 찐 방어막
+    "114260", # KODEX 국고채3년
+    "148070", # KOEF 국고채10년 (혹시 몰라 추가)
+    "229200", # ACE SOFR ETF (달러 파킹)
 ]
 
 # ============================================================
@@ -61,7 +69,7 @@ CORE_ETFS = [
 # ============================================================
 MA_PERIODS     = [5, 22, 60, 182]    # short → long moving average windows
 ENVELOPE_PERIOD = 22                  # central MA for the envelope
-ENVELOPE_BAND   = 0.10                # ±10 % bands around the 22-day MA
+ENVELOPE_BAND   = 0.20                # ±10 % bands around the 22-day MA
 
 # Minimum alignment score to generate a BL view (0.0 – 1.0)
 # Signals below this gate are excluded from the Omega matrix entirely

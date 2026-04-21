@@ -4,7 +4,7 @@ import pandas as pd
 import yfinance as yf
 import FinanceDataReader as fdr
 from urllib import request
-from config import CORE_ETFS
+from config import CORE_ETFS, DEFENSIVE_ETFS
 
 class UniverseManager:   
     @staticmethod
@@ -20,8 +20,8 @@ class UniverseManager:
         url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
         req = request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with request.urlopen(req) as response:
-            table = pd.read_html(response)
-        return table[4]['Ticker'].tolist()
+            table = pd.read_html(response, match='Ticker')
+        return table[0]['Ticker'].tolist()
 
     @staticmethod
     def get_dow_jones_tickers():
@@ -44,5 +44,5 @@ class UniverseManager:
         kospi = self.get_kospi_200_tickers()
         # strategic_us = list(US_TICKERS.keys())
         
-        full_list = list(set(sp500 + nasdaq + dow + kospi + CORE_ETFS))
+        full_list = list(set(sp500 + nasdaq + dow + kospi + CORE_ETFS + DEFENSIVE_ETFS))
         return [t.replace('.', '-') for t in full_list]
