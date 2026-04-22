@@ -1,11 +1,46 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
+import numpy as np
 import yfinance as yf
 import FinanceDataReader as fdr
+import pandas_datareader.data as web
 from config import VIX_KILLSWITCH, VIX_CONFIDENCE_BASE, TIPS_TICKER, SOFR_SAFE_HAVEN
 
 def is_kr_ticker(ticker):
     return str(ticker)[0].isdigit()
+
+def get_macro_expected_returns(tickers, lookback_days=252):
+    """
+    Fetches macroeconomic data from FRED, calculates recent Z-Scores,
+    and translates them into expected returns (Q_macro views).
+    """
+    print("[MACRO] Fetching global macro data from FRED...")
+    
+    try:
+        macro_df = web.DataReader(['DEXKOUS'], 'fred', start='2024-01-01')
+        macro_df = macro_df.ffill()
+        
+        recent_data = macro_df.tail(lookback_days)
+        z_scores = (recent_data.iloc[-1] - recent_data.mean()) / recent_data.std()
+        
+        usdkrw_z = z_scores['DEXKOUS'] if not np.isnan(z_scores['DEXKOUS']) else 0
+        print(f"   -> USDKRW Z-Score: {usdkrw_z:.2f} (Higher = KRW weakness = KR equity headwind)")
+        
+        # Scalar: Penalty of -5% return expectation per +1.0 Z-score
+        kr_macro_view = -1.0 * usdkrw_z * 0.05 
+        
+    except Exception as e:
+        print(f"[WARNING] FRED data fetch failed: {e}")
+        kr_macro_view = 0.0
+        
+    q_macro = pd.Series(0.0, index=tickers)
+    for ticker in tickers:
+        if is_kr_ticker(ticker):
+            q_macro[ticker] = kr_macro_view # Apply heavy FX penalty to KR equities
+        else:
+            q_macro[ticker] = 0.0 # US equities remain neutral (for now)
+            
+    return q_macro
 
 def build_dynamic_segment_map(ticker_list):
     """Categorize the seleceted tickers to Growth/Value sector"""

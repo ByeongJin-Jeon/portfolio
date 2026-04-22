@@ -4,7 +4,7 @@ import yfinance as yf
 from signals.trend import generate_trend_views
 from signals.fundamental import generate_fundamental_views
 from signals.options_skew import generate_options_skew_views
-from signals.macro import get_macro_signals, apply_macro_filters
+from signals.macro import get_macro_expected_returns, get_macro_signals, apply_macro_filters
 from portfolio.factor_loading import fetch_ff_factors, extract_idiosyncratic_alpha
 from config import Q_WEIGHTS, VIX_KILLSWITCH, FX_KILLSWITCH_LIMIT, DEFENSIVE_ETFS
 
@@ -18,6 +18,18 @@ def compose_bl_inputs(prices):
     Q_trend = generate_trend_views(prices)
     if isinstance(Q_trend, pd.DataFrame):
         Q_trend = Q_trend.iloc[-1]
+
+    print("➡️  Macro Economic Views (Applying 70% weight for KR assets)")
+    Q_macro = get_macro_expected_returns(tickers)
+    Q_blended = pd.Series(0.0, index=tickers)
+    
+    for ticker in tickers:
+        if str(ticker)[0].isdigit():
+            # KR Asset: Highly sensitive to macro conditions (FX, global cycle)
+            Q_blended[ticker] = (0.7 * Q_macro[ticker]) + (0.3 * Q_trend[ticker])
+        else:
+            # US Asset: Greater resilience, relies more on internal trends
+            Q_blended[ticker] = (0.3 * Q_macro[ticker]) + (0.7 * Q_trend[ticker])
 
     print(f"2️⃣  Fundamental & Smart money ({Q_WEIGHTS['fundamental'] * 100}% weight)")
     Q_fundamental = generate_fundamental_views(tickers)
@@ -33,7 +45,13 @@ def compose_bl_inputs(prices):
     print(f"4️⃣  Put-call volatility skew ({Q_WEIGHTS['skew'] * 100}% weight)")
     Q_skew = generate_options_skew_views(tickers)
 
-    final_raw_q = (Q_trend * Q_WEIGHTS['trend']).add(Q_fundamental * Q_WEIGHTS['fundamental'], fill_value=0) \
+    df = pd.DataFrame({'Q_blended': Q_blended,
+                       'Q_fundamental': Q_fundamental,
+                       'Q_alpha': Q_alpha,
+                       'Q_skew': Q_skew})
+    df.to_csv('Q_matrix.csv')
+
+    final_raw_q = (Q_blended * Q_WEIGHTS['trend']).add(Q_fundamental * Q_WEIGHTS['fundamental'], fill_value=0) \
                                  .add(Q_alpha * Q_WEIGHTS['alpha'], fill_value=0) \
                                  .add(Q_skew * Q_WEIGHTS['skew'], fill_value=0)
     

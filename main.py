@@ -29,7 +29,7 @@ from optimization.hrp import get_hrp_prior_weights
 from optimization.black_litterman import construct_bl_model
 from portfolio.selector import select_final_portfolio, export_portfolio
 from portfolio.constraints import calculate_liquidity_caps
-from backtest.engine import ResilientBacktester, run_scenario_backtest
+from backtest.engine import ResilientBacktester
 from evaluation.metrics import calculate_resilience_suite
 
 def main():
@@ -56,25 +56,54 @@ def main():
     filtered_volumes = raw_volumes[candidate_tickers]
     print(f"✅ Filtered down to top {len(candidate_tickers)} momentum leaders.")
     
-    returns = filtered_prices.ffill().pct_change(fill_method=None).dropna()
-    # returns = returns.clip(lower=-0.3, upper=0.3) 
-    # print("⚠️ Corrected outliers (±30%).")
+    def my_quant_strategy(past_prices):
+        """
+        The Brain of our Walk-Forward Time Machine.
+        Takes ONLY past data, outputs optimal weights. No future peeking!
+        """
+        # Data sufficiency check (Need at least 1 year of data for FF5 & Volatility)
+        if len(past_prices) < 252:
+            return pd.Series(0.0, index=past_prices.columns)
 
-    q_views, initial_omega, kill_switch_active = compose_bl_inputs(filtered_prices)
+        # 1. Calculate Returns
+        returns = past_prices.pct_change(fill_method=None).dropna()
 
-    idio_risk = calculate_idiosyncratic_risk(returns)
-    hrp_prior = get_hrp_prior_weights(returns)
-    bl_port = construct_bl_model(returns, hrp_prior, q_views, idio_risk)
+        # 2. Generate Signals (Macro, Trend, Fundamental, Skew)
+        try:
+            # Note: compose_bl_inputs might print lots of logs. 
+            # In a real backtest, you might want to suppress these prints to keep the terminal clean.
+            q_views, initial_omega, kill_switch_active = compose_bl_inputs(past_prices)
+        except Exception as e:
+            print(f"      -> [ERROR] Signal generation failed: {e}")
+            return pd.Series(0.0, index=past_prices.columns)
 
-    liquidity_caps = calculate_liquidity_caps(filtered_volumes, filtered_prices, BACKTEST_INITIAL_CAPITAL)
-    final_weights = select_final_portfolio(bl_port, liquidity_caps)
-    
-    export_portfolio(final_weights, "outputs/final_weights.csv")
+        # 3. Factor Loading & Idiosyncratic Risk
+        idio_risk = calculate_idiosyncratic_risk(returns)
 
-    print("\n📊 Running 'MIDEAST_2026' Resilience Simulation...")
-    backtester = ResilientBacktester(all_prices_krw)
-    
-    all_results = backtester.run_all_scenarios(final_weights)
+        # 4. HRP Prior
+        hrp_prior = get_hrp_prior_weights(returns)
+
+        # 5. Black-Litterman Optimization
+        bl_port = construct_bl_model(returns, hrp_prior, q_views, idio_risk)
+
+        # 6. Liquidity Constraints (Align volumes with the past timeframe!)
+        past_volumes = filtered_volumes.loc[past_prices.index]
+        liquidity_caps = calculate_liquidity_caps(past_volumes, past_prices, BACKTEST_INITIAL_CAPITAL)
+
+        # 7. Final Selection
+        final_w = select_final_portfolio(bl_port, liquidity_caps)
+        
+        return final_w
+
+    # --- CURRENT LIVE VIEW ---
+    print("\n🔮 [CURRENT LIVE VIEW] Generating Today's Optimal Portfolio...")
+    current_live_weights = my_quant_strategy(filtered_prices)
+    export_portfolio(current_live_weights, "outputs/final_weights.csv")
+
+    # --- WALK-FORWARD BACKTESTING ---
+    print("\n📊 [BACKTEST] Running Walk-Forward Resilience Simulation...")
+    backtester = ResilientBacktester(all_prices_krw, strategy_func=my_quant_strategy)
+    all_results = backtester.run_all_scenarios()
 
     print("\n" + "="*60)
     print("🏆 FINAL MULTI-SCENARIO RESILIENCE REPORT 🏆")
@@ -84,20 +113,13 @@ def main():
         if pf_result is None:
             print(f"\n[Scenario: {scenario_name}] - No data available, skipping report.")
             continue
+            
         stats = calculate_resilience_suite(pf_result)
         
         print(f"\n[Scenario: {scenario_name}]")
         print("-" * 30)
         for metric, value in stats.items():
             print(f" - {metric:25}: {value:10.2f}")
-
-    print("\n" + "="*50)
-    print("🏆 BACKTEST SCORECARD 🏆")
-    print("="*50)
-    for metric, value in stats.items():
-        print(f"{metric}: {value:.2f}")
-    
-    print("\n✅ Strategy execution complete. Check 'outputs/' for details.")
 
 if __name__ == "__main__":
     main()

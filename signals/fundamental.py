@@ -50,7 +50,7 @@ def generate_fundamental_views(tickers):
         if is_kr_ticker(ticker):
             clean_ticker = str(ticker).replace('.KS', '').replace('.KQ', '')
 
-            if clean_ticker in ["069500", "114260", "139260"]:
+            if clean_ticker in ["069500", "139260", "114260", "148070", "456880"]:
                 continue
             
             op = get_kr_operating_profit(clean_ticker)

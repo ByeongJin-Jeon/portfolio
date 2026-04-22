@@ -3,47 +3,62 @@ import vectorbt as vbt
 import pandas as pd
 from config import MA_PERIODS, ENVELOPE_PERIOD, ENVELOPE_BAND
 
+def calculate_rsi(prices, window=14):
+    """
+    Computes the standard RSI (Relative Strength Index) for the universe.
+    Uses Exponential Moving Average (EMA) for institutional-grade smoothing.
+    """
+    delta = prices.diff()
+    
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    
+    avg_gain = gain.ewm(com=window-1, min_periods=window).mean()
+    avg_loss = loss.ewm(com=window-1, min_periods=window).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return rsi
+
 def generate_trend_views(prices):
     """
-    Phase 1-A: MA Alignment & Envelope logic with Label Alignment.
-    """
-    # 1. Calculate Moving Averages and Force Column Alignment
-    mas = {}
-    for p in MA_PERIODS:
-        ma_df = vbt.MA.run(prices, p).ma
+    Hybrid Momentum Engine:
+    Blends Absolute Momentum (EMA Alignment) with Relative Momentum (RSI Z-Score)."""
+    # ---------------------------------------------------------
+    # 1. Absolute Momentum (Your original EMA alignment logic!)
+    # ---------------------------------------------------------
+    ema_5 = prices.ewm(span=5, adjust=False).mean().iloc[-1]
+    ema_20 = prices.ewm(span=20, adjust=False).mean().iloc[-1]
+    ema_60 = prices.ewm(span=60, adjust=False).mean().iloc[-1]
+    
+    # +1.0 for perfect bullish alignment, -1.0 for perfect bearish, 0 otherwise
+    ema_score = pd.Series(0.0, index=prices.columns)
+    ema_score[(ema_5 > ema_20) & (ema_20 > ema_60)] = 1.0
+    ema_score[(ema_5 < ema_20) & (ema_20 < ema_60)] = -1.0
+    
+    # ---------------------------------------------------------
+    # 2. Relative Momentum (Cross-Sectional RSI Z-Score)
+    # ---------------------------------------------------------
+    rsi_df = calculate_rsi(prices, window=14)
+    latest_rsi = rsi_df.iloc[-1].dropna()
+    
+    if latest_rsi.empty:
+        print("[WARNING] RSI calculation failed. Returning neutral views.")
+        return pd.Series(0.0, index=prices.columns)
         
-        # vectorbt adds the window 'p' as a top-level column index.
-        # we drop it so that MA5, MA22, etc., all have identical 'Ticker' columns.
-        if isinstance(ma_df.columns, pd.MultiIndex):
-            ma_df.columns = ma_df.columns.droplevel(0)
-        
-        mas[f"MA{p}"] = ma_df
-
-    # 2. Alignment Logic: Now identically labeled, so comparison works
-    bull_align = (mas['MA5'] > mas['MA22']) & (mas['MA22'] > mas['MA60'])
-    bear_align = (mas['MA5'] < mas['MA22']) & (mas['MA22'] < mas['MA60'])
-
-    # 3. Golden/Dead cross with MA5 and MA22
-    golden_cross = (mas['MA5'] > mas['MA22']) & (mas['MA5'].shift(1) <= mas['MA22'].shift(1))
-    dead_cross = (mas['MA5'] < mas['MA22']) & (mas['MA5'].shift(1) >= mas['MA22'].shift(1))
-
-    # 4. Envelope Filter (Mean Reversion)
-    central_ma = mas[f'MA{ENVELOPE_PERIOD}']
-    upper_band = central_ma * (1 + ENVELOPE_BAND)
-    lower_band = central_ma * (1 - ENVELOPE_BAND)
+    rsi_z_scores = (latest_rsi - latest_rsi.mean()) / latest_rsi.std()
     
-    overbought = prices > upper_band
-    oversold = prices < lower_band
+    # ---------------------------------------------------------
+    # 3. Blend & Convert to Expected Returns (Q_trend)
+    # ---------------------------------------------------------
+    # EMA gives direction (multiplier 1.0), RSI gives extra turbo speed (multiplier 0.5)
+    combined_score = (ema_score * 1.0) + (rsi_z_scores * 0.5)
     
-    # 4. View Strength Logic
-    views = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-    views += bull_align.astype(float) * 1.0
-    views += bear_align.astype(float) * -1.0
-
-    views += golden_cross.astype(float) * 0.5
-    views += dead_cross.astype(float) * -0.5
-
-    views += overbought.astype(float) * -1.0
-    views += oversold.astype(float) * 1.0
+    # Convert score to expected return (1.0 score = 5% expectation)
+    Q_trend = combined_score * 0.05
+    Q_trend = Q_trend.clip(lower=-0.15, upper=0.15)
     
-    return views
+    print(f"   -> Strongest Hybrid Trend: {Q_trend.idxmax()} ({Q_trend.max()*100:.1f}%)")
+    print(f"   -> Weakest Hybrid Trend: {Q_trend.idxmin()} ({Q_trend.min()*100:.1f}%)")
+    
+    return Q_trend

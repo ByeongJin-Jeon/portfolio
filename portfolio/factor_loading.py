@@ -53,11 +53,21 @@ def extract_idiosyncratic_alpha(asset_returns, ff_factors):
         # Confirmation of residual momentum over the past 20 days
         recent_residuals = model.resid.tail(20)
         
-        # If the mean of the residuals is positive (+) 
-        # and the t-statistic is significant, it is true alpha.
-        if recent_residuals.mean() > 0:
-            alpha_views[asset] = 1.0
-        elif recent_residuals.mean() < 0:
-            alpha_views[asset] = -1.0
+        if recent_residuals.empty:
+            continue
+            
+        # Calculate how 'extreme' this alpha is (Z-Score of the residual)
+        if recent_residuals.mean() > 0 and recent_residuals.iloc[-1] > 0:
+            z_score = recent_residuals.mean() / (recent_residuals.std() + 1e-6)
+            
+            # Dynamic Scaling: 1 Z-score = +5% alpha, capped at an extreme +20%
+            dynamic_alpha = min(0.20, z_score * 0.05)
+            alpha_views[asset] = dynamic_alpha
+            
+        elif recent_residuals.mean() < 0 and recent_residuals.iloc[-1] < 0:
+            z_score = abs(recent_residuals.mean() / (recent_residuals.std() + 1e-6))
+            # Bad news is capped at -10% extra penalty
+            dynamic_alpha = max(-0.10, -1.0 * z_score * 0.05)
+            alpha_views[asset] = dynamic_alpha
             
     return alpha_views
