@@ -2,7 +2,13 @@
 import vectorbt as vbt
 import pandas as pd
 import numpy as np
+import os
+import sys
+from contextlib import redirect_stdout, redirect_stderr
 from config import BACKTEST_SCENARIOS, BACKTEST_INITIAL_CAPITAL, BACKTEST_COMMISSION
+
+import warnings
+warnings.filterwarnings('ignore')
 
 class ResilientBacktester:
     """
@@ -43,17 +49,19 @@ class ResilientBacktester:
             # Create a DataFrame of NaNs to hold our target weights.
             # vectorbt will ONLY trade on days with non-NaN values! (Perfect for monthly rebalancing)
             target_weights_df = pd.DataFrame(np.nan, index=asset_subset.index, columns=asset_subset.columns)
-            
+
             for i, current_date in enumerate(monthly_dates):
                 # Print progress on the same line
                 print(f"      * Rebalancing {current_date.strftime('%Y-%m')} ({i+1}/{len(monthly_dates)})...", end="\r")
+                sys.stdout.flush()
                 
                 # THE GOLDEN RULE: Cut data exactly at current_date (NO FUTURE DATA!)
                 past_prices = self.prices.loc[:current_date]
-                
+
                 try:
                     # Call your brain (Strategy Pipeline)
-                    weights = self.strategy_func(past_prices)
+                    with open(os.devnull, 'w') as f, redirect_stdout(f), redirect_stderr(f):
+                        weights = self.strategy_func(past_prices)
                     
                     # Map weights to available assets and normalize
                     final_assets = [a for a in weights.index if a in available_assets]
@@ -67,6 +75,7 @@ class ResilientBacktester:
                         
                 except Exception as e:
                     # If optimizer fails (e.g., extreme crisis), go 100% cash (weights = 0)
+                    print(f"\n      -> [ERROR] at {current_date.strftime('%Y-%m')}: {e}")
                     target_weights_df.loc[current_date] = 0.0
             
             print(f"\n      * [SUCCESS] Walk-Forward trajectory built for {scenario_name}!")
