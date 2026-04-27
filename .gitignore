@@ -3,3 +3,6 @@ __pycache__
 compress.sh
 /data/cache
 *.csv
+*.xlsx
+OPENDART_API_KEY.txt
+AGENTS.md

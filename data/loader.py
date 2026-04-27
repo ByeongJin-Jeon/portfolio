@@ -136,46 +136,44 @@ def fetch_pbr_data(ticker_list):
     
     return pd.Series(pbr_map)
 
-def filter_candidates(price_df, volume_df):
-    """6M liquidity + Sharpe momentum + low-volatility filter"""
-    window = min(60, len(price_df) - 1)
-    if window > 0:
-        returns = price_df.ffill().pct_change(fill_method=None).tail(window)
-        volatility = returns.std()
-        volatility = volatility.replace(0, 0.0001)
-        
-        momentum = (price_df.iloc[-1] / price_df.iloc[-(window+1)]) - 1
-        
-        quality_score = momentum / volatility
-    else:
-        quality_score = pd.Series(1, index=price_df.columns)
+def filter_candidates(price_df, volume_df, top_n=200):
+    """
+    Filters the most active and trending candidates using only fast Pandas operations
+    (Historical Price & Volume) without heavy API calls like yfinance or DART.
+    """
+    filled_prices = price_df.ffill()
 
-    avg_volume = volume_df.tail(20).mean()
-    avg_price = price_df.tail(20).mean()
-    dollar_volume = avg_volume * avg_price
+    recent_prices = price_df.tail(20).mean()
+    recent_volumes = volume_df.tail(20).mean()
+    price_volume = recent_prices * recent_volumes
 
-    is_kr = pd.Series(dollar_volume.index.map(is_kr_ticker), index=dollar_volume.index)
-    kr_universe = dollar_volume[is_kr]
-    us_universe = dollar_volume[~is_kr]
+    valid_price_volume = price_volume.dropna()
+    valid_price_volume = valid_price_volume[valid_price_volume > 0]
 
-    top_kr_liquid = kr_universe.nlargest(50).index
-    top_us_liquid = us_universe.nlargest(50).index
+    current_prices = filled_prices.iloc[-1]
+    ma_200 = price_df.tail(200).mean()
+    
+    alive_trend = current_prices > (ma_200 * 0.8) 
+    valid_tickers = [t for t in valid_price_volume.index if alive_trend.get(t, False)]
+    valid_series = valid_price_volume.loc[valid_tickers]
 
-    selected_kr = quality_score.reindex(top_kr_liquid).nlargest(15).index.tolist()
-    selected_us = quality_score.reindex(top_us_liquid).nlargest(15).index.tolist()
+    kr_tickers = [t for t in valid_series.index if is_kr_ticker(t)]
+    us_tickers = [t for t in valid_series.index if not is_kr_ticker(t)]
 
-    remaining_liquid = list(set(top_kr_liquid.tolist() + top_us_liquid.tolist()) - set(selected_kr + selected_us))
-    wildcards = quality_score.reindex(remaining_liquid).nlargest(20).index.tolist()
+    kr_top = valid_series.loc[kr_tickers].nlargest(top_n // 2).index.tolist()
+    us_top = valid_series.loc[us_tickers].nlargest(top_n // 2).index.tolist()
 
-    final_50 = selected_kr + selected_us + wildcards
-
-    final_list = list(set(final_50 + CORE_ETFS + DEFENSIVE_ETFS))
+    final_candidates = kr_top + us_top
+    must_have = set(CORE_ETFS + DEFENSIVE_ETFS)
+    final_list = list(set(final_candidates) | must_have)
     final_list = [t for t in final_list if t in price_df.columns]
 
-    print(f"✅ Selected {len(final_list)}: KR({len([t for t in final_50 if is_kr_ticker(t)])}), "
-          f"US({len([t for t in final_50 if not is_kr_ticker(t)])}), "
+    kr_count = sum(1 for t in final_list if is_kr_ticker(t))
+    us_count = len(final_list) - kr_count
+
+    print(f"✅ Selected {len(final_list)}: KR({kr_count}), US({us_count})"
           f"(Including {len(CORE_ETFS)} Core ETFs and {len(DEFENSIVE_ETFS)} Defensive ETFs!)")
-    
+
     return final_list
 
 def apply_currency_conversion(price_df):

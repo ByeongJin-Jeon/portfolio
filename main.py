@@ -72,7 +72,8 @@ def main():
         try:
             # Note: compose_bl_inputs might print lots of logs. 
             # In a real backtest, you might want to suppress these prints to keep the terminal clean.
-            q_views, initial_omega, kill_switch_active = compose_bl_inputs(past_prices)
+            past_volumes = filtered_volumes.loc[past_prices.index]
+            q_views, initial_omega, kill_switch_active = compose_bl_inputs(past_prices, past_volumes)
         except Exception as e:
             print(f"      -> [ERROR] Signal generation failed: {e}")
             return pd.Series(0.0, index=past_prices.columns)

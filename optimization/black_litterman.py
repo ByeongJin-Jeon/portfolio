@@ -22,7 +22,8 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
         P.loc[asset, asset] = 1.0
         
     # 2. Q Vector (Views)
-    Q = tactical_views.loc[active_assets].values.reshape(-1, 1)
+    # Q = (tactical_views.loc[active_assets].values).reshape(-1, 1)
+    Q = (tactical_views.loc[active_assets].values / 252).reshape(-1, 1)
     
     # 3. Omega (Uncertainty Matrix)
     Omega = np.diag(idiosyncratic_vars.loc[active_assets] * BL_TAU)
@@ -50,7 +51,7 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
 
     # Stage 1: Attempt to Maximize UPI (Return/CDaR)
     port.alpha = CDAR_ALPHA
-    port.upperCDaR = CDAR_LIMIT
+    # port.upperCDaR = CDAR_LIMIT
     port.upperlng = 0.15
 
     w_optimized = port.optimization(
@@ -63,7 +64,6 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
     
     # If the solver fails to find a solution satisfying both max Sharpe and the CDaR limit:
     if w_optimized is None or w_optimized.empty:
-        print(f"[WARNING] Solver failed! Impossible to maximize Sharpe while keeping CDaR <= {CDAR_LIMIT*100:.0f}%.")
         print("[FALLBACK] Survival comes first! Removing CDaR limit and switching to MinRisk objective.")
         
         port.upperCDaR = None # Remove the strict CDaR limit to give the solver breathing room
@@ -73,8 +73,7 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
             rm='CDaR',
             obj='MinRisk',    # Go all-in on defense (Minimize Risk)
             rf=0,
-            hist=True,
-            solver='ECOS'
+            hist=True
         )
         
         # If it still fails, deploy the last resort: HRP weights
@@ -82,6 +81,6 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
              print("[CRITICAL] 2nd optimization failed! Deploying HRP weights as the last resort.")
              w_optimized = hrp_weights
     else:
-        print(f"[SUCCESS] Optimization completed! (Objective: Max Sharpe, CDaR Limit: {CDAR_LIMIT*100:.0f}%)")
+        print(f"[SUCCESS] Optimization completed!")
     
     return w_optimized
