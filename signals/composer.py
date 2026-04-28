@@ -34,7 +34,12 @@ def compose_bl_inputs(prices, volumes=None):
     if is_time_machine_mode:
         Q_macro = pd.Series(0.0, index=tickers)
         Q_skew = pd.Series(0.0, index=tickers)
-        macro_signals = {"kill_switch": False, "vix_level": 20.0, "vix_scalar": 1.0}
+        macro_signals = {
+            "kill_switch": False, 
+            "vix_level": 20.0, 
+            "vix_scalar": 1.0,
+            "tilt_to_quality": False
+        }
         base_kill_switch = False
         vix_trigger = False
         fx_trigger = False
@@ -97,13 +102,6 @@ def compose_bl_inputs(prices, volumes=None):
                 .add(Q_alpha * Q_WEIGHTS['alpha'], fill_value=0)
     
     final_raw_q = final_raw_q.fillna(0.0)
-
-    df = pd.DataFrame({'Q_trend': Q_trend,
-                       'Q_skew': Q_skew,
-                       'Q_fundamental': Q_fundamental,
-                       'Q_alpha': Q_alpha,
-                       'final_Q': final_raw_q})
-    df.to_csv('Q_matrix.csv')
 
     # Kill-Switch & Filters
     combined_kill_switch = bool(base_kill_switch or vix_trigger or fx_trigger)

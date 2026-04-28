@@ -40,11 +40,12 @@ class ResilientBacktester:
             print("   -> [WALK-FORWARD] Monthly Rebalancing Activated (No Look-Ahead Bias).")
             print("   -> [INFO] Running the optimizer for EVERY month. Grab a coffee! ☕")
             
-            # Extract End-of-Month dates
+            # Extract actual last trading days of each month
             try:
-                monthly_dates = asset_subset.resample('ME').last().index # pandas >= 2.2
+                resampled = asset_subset.index.to_series().resample('ME').last()
             except ValueError:
-                monthly_dates = asset_subset.resample('M').last().index  # pandas < 2.2
+                resampled = asset_subset.index.to_series().resample('M').last()
+            monthly_dates = pd.DatetimeIndex(resampled.dropna())
             
             # Create a DataFrame of NaNs to hold our target weights.
             # vectorbt will ONLY trade on days with non-NaN values! (Perfect for monthly rebalancing)
@@ -62,6 +63,7 @@ class ResilientBacktester:
                     # Call your brain (Strategy Pipeline)
                     with open(os.devnull, 'w') as f, redirect_stdout(f), redirect_stderr(f):
                         weights = self.strategy_func(past_prices)
+                    # weights = self.strategy_func(past_prices)
                     
                     # Map weights to available assets and normalize
                     final_assets = [a for a in weights.index if a in available_assets]

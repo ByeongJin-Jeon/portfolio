@@ -12,6 +12,7 @@ scipy>=1.13.0
 yfinance>=0.2.40
 pandas-datareader>=0.10.0     # Fama-French factor data (Ken French library)
 pykrx>=1.0.45                 # KOSPI universe & market cap data
+OpenDartReader>=0.2.1         # DART API (Phase 2)
 
 # --- Optimization ---
 Riskfolio-Lib>=6.1.0          # HRP, Black-Litterman, CDaR / UPI

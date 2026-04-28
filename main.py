@@ -16,7 +16,7 @@ import pandas as pd
 import yfinance as yf
 from config import (
     BACKTEST_INITIAL_CAPITAL, DATA_DIR,
-    PRICE_START, PRICE_END
+    PRICE_START, PRICE_END, USE_CACHE_DATA
 )
 from data.universe import UniverseManager
 from data.loader import (
@@ -40,21 +40,30 @@ def main():
     price_path = os.path.join(DATA_DIR, "universe_prices.csv")
     volume_path = os.path.join(DATA_DIR, "universe_volumes.csv")
 
-    print("📥 Fetching fresh data for the entire universe... (This may take a while)")
-    full_prices, full_volumes = fetch_data_in_chunks(full_ticker_list, PRICE_START, PRICE_END, chunk_size=50)
-    save_to_cache(full_prices, price_path)
-    save_to_cache(full_volumes, volume_path)
-
-    raw_prices = load_from_cache(price_path)
-    raw_volumes = load_from_cache(volume_path)
+    if USE_CACHE_DATA and os.path.exists(price_path) and os.path.exists(volume_path):
+        print("📦 USE_CACHE_DATA is True. Loading data from local cache...")
+        all_prices_raw = load_from_cache(price_path)
+        all_volumes = load_from_cache(volume_path)
+    else:
+        print(f"📥 Fetching fresh data for the entire universe... (This may take a while)")
+        all_prices_raw, all_volumes = fetch_data_in_chunks(
+            full_ticker_list, 
+            start_date=PRICE_START, 
+            end_date=PRICE_END
+        )
+        save_to_cache(all_prices_raw, price_path)
+        save_to_cache(all_volumes, volume_path)
     
     print("💱 Converting full universe to KRW for fair comparison...")
-    all_prices_krw, _ = apply_currency_conversion(raw_prices)
-
-    candidate_tickers = filter_candidates(all_prices_krw, raw_volumes)
-    filtered_prices = all_prices_krw[candidate_tickers]
-    filtered_volumes = raw_volumes[candidate_tickers]
-    print(f"✅ Filtered down to top {len(candidate_tickers)} momentum leaders.")
+    try:
+        conversion_result = apply_currency_conversion(all_prices_raw)
+        if isinstance(conversion_result, tuple):
+            all_prices_krw = conversion_result[0]
+        else:
+            all_prices_krw = conversion_result
+    except Exception as e:
+        print(f"⚠️ Currency conversion failed: {e}. Using raw prices.")
+        all_prices_krw = all_prices_raw
     
     def my_quant_strategy(past_prices):
         """
@@ -64,16 +73,28 @@ def main():
         # Data sufficiency check (Need at least 1 year of data for FF5 & Volatility)
         if len(past_prices) < 252:
             return pd.Series(0.0, index=past_prices.columns)
+        
+        past_volumes_all = all_volumes.loc[past_prices.index]
+        past_candidates = filter_candidates(past_prices, past_volumes_all)
+
+        recent_prices = past_prices[past_candidates].tail(252).ffill()
+        recent_volumes = past_volumes_all[past_candidates].tail(252).ffill()
+
+        valid_tickers = recent_prices.columns[recent_prices.notna().all()]
+        valid_prices = recent_prices[valid_tickers]
+        valid_volumes = recent_volumes[valid_tickers]
+
+        if len(valid_tickers) < 10:
+            return pd.Series(0.0, index=past_prices.columns)
 
         # 1. Calculate Returns
-        returns = past_prices.pct_change(fill_method=None).dropna()
+        returns = valid_prices.pct_change(fill_method=None).dropna()
 
         # 2. Generate Signals (Macro, Trend, Fundamental, Skew)
         try:
             # Note: compose_bl_inputs might print lots of logs. 
             # In a real backtest, you might want to suppress these prints to keep the terminal clean.
-            past_volumes = filtered_volumes.loc[past_prices.index]
-            q_views, initial_omega, kill_switch_active = compose_bl_inputs(past_prices, past_volumes)
+            q_views, initial_omega, kill_switch_active = compose_bl_inputs(valid_prices, valid_volumes)
         except Exception as e:
             print(f"      -> [ERROR] Signal generation failed: {e}")
             return pd.Series(0.0, index=past_prices.columns)
@@ -88,17 +109,16 @@ def main():
         bl_port = construct_bl_model(returns, hrp_prior, q_views, idio_risk)
 
         # 6. Liquidity Constraints (Align volumes with the past timeframe!)
-        past_volumes = filtered_volumes.loc[past_prices.index]
-        liquidity_caps = calculate_liquidity_caps(past_volumes, past_prices, BACKTEST_INITIAL_CAPITAL)
+        liquidity_caps = calculate_liquidity_caps(valid_volumes, valid_prices, BACKTEST_INITIAL_CAPITAL)
 
         # 7. Final Selection
         final_w = select_final_portfolio(bl_port, liquidity_caps)
         
-        return final_w
+        return final_w.reindex(past_prices.columns).fillna(0.0)
 
     # --- CURRENT LIVE VIEW ---
     print("\n🔮 [CURRENT LIVE VIEW] Generating Today's Optimal Portfolio...")
-    current_live_weights = my_quant_strategy(filtered_prices)
+    current_live_weights = my_quant_strategy(all_prices_krw)
     export_portfolio(current_live_weights, "outputs/final_weights.csv")
 
     # --- WALK-FORWARD BACKTESTING ---
