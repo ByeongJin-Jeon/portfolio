@@ -7,7 +7,7 @@ import io
 import time
 import os
 import OpenDartReader
-from config import DART_API_KEY
+from config import DART_API_KEY, DEFENSIVE_ETFS, CORE_ETFS
 
 def is_kr_ticker(ticker):
     return str(ticker)[0].isdigit()
@@ -373,6 +373,11 @@ def generate_fundamental_views(tickers):
     total_module_weight = sum(FACTOR_WEIGHTS.values())
     
     for ticker in tickers:
+        clean_ticker = str(ticker).split('.')[0]
+        if clean_ticker in DEFENSIVE_ETFS or clean_ticker in CORE_ETFS:
+            views[ticker] = 50.0 
+            continue
+
         data = get_fundamental_data(ticker)
         if data is None:
             views[ticker] = 0.0

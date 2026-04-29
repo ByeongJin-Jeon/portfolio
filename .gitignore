@@ -2,6 +2,7 @@ __pycache__
 .vscode
 compress.sh
 /data/cache
+/docs_cache
 *.csv
 *.xlsx
 OPENDART_API_KEY.txt
