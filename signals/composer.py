@@ -103,6 +103,13 @@ def compose_bl_inputs(prices, volumes=None):
     
     final_raw_q = final_raw_q.fillna(0.0)
 
+    q_df = pd.DataFrame({"Q_trend": Q_trend,
+                         "Q_fundamental": Q_fundamental,
+                         "Q_skew": Q_skew,
+                         "Q_alpha": Q_alpha,
+                         "final_raw_q": final_raw_q})
+    q_df.to_csv('outputs/Q_matrix.csv')
+
     # Kill-Switch & Filters
     combined_kill_switch = bool(base_kill_switch or vix_trigger or fx_trigger)
     macro_signals["global_kill_switch"] = combined_kill_switch

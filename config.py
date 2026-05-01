@@ -147,11 +147,11 @@ HRP_DISTANCE_METRIC = "pearson"       # correlation → distance conversion
 BL_RISK_AVERSION    = 2.5             # δ (delta): market risk-aversion coefficient
 BL_TAU              = 0.05            # τ (tau): scales uncertainty of prior
                                        # rule-of-thumb: 1/T where T = sample length
-RM_METHOD           = "CVaR"          # In Riskfolio, 'Sharpe' + 'rm' maximizes the Ulcer Performance Index
+RM_METHOD           = "CDaR"          # In Riskfolio, 'Sharpe' + 'rm' maximizes the Ulcer Performance Index
 
 # CDaR / UPI
 CDAR_ALPHA          = 0.05            # CVaR / CDaR confidence level
-CDAR_LIMIT          = 0.15            # hard constraint: CDaR ≤ 15 %
+CDAR_LIMIT          = 0.30            # hard constraint: CDaR ≤ CDAR_LIMIT %
 RISK_FREE_RATE      = 0.04            # annualized (used in UPI & Calmar)
 
 

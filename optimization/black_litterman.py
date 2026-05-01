@@ -23,23 +23,30 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
         
     # 2. Q Vector (Views)
     # Q = (tactical_views.loc[active_assets].values).reshape(-1, 1)
-    Q = (tactical_views.loc[active_assets].values / 252).reshape(-1, 1)
+    Q = (tactical_views.loc[active_assets].values.astype(float) / 252).reshape(-1, 1)
     
     # 3. Omega (Uncertainty Matrix)
-    Omega = np.diag(idiosyncratic_vars.loc[active_assets] * BL_TAU)
+    Omega = np.diag(idiosyncratic_vars.loc[active_assets].astype(float) * BL_TAU)
     
     # 4. Black-Litterman Setup
     port = rp.Portfolio(returns=returns)
     port.assets_stats(method_mu='hist', method_cov='ledoit')
 
-    port.blacklitterman_stats(
-        P=P.values,
-        Q=Q,
-        rf=RISK_FREE_RATE,
-        w=hrp_weights.values.reshape(-1, 1), 
-        delta=BL_RISK_AVERSION,
-    )
+    mu = port.mu.values.astype(float).reshape(-1, 1)
+    cov = port.cov.values.astype(float)
+    w_eq = hrp_weights.values.astype(float).reshape(-1, 1)
 
+    Pi = BL_RISK_AVERSION * cov.dot(w_eq)
+
+    tau_cov_inv = np.linalg.inv(BL_TAU * cov)
+    omega_inv = np.linalg.inv(Omega)
+    M = tau_cov_inv + P.values.astype(float).T.dot(omega_inv).dot(P.values.astype(float))
+
+    mu_bl = np.linalg.inv(M).dot(tau_cov_inv.dot(Pi) + P.values.astype(float).T.dot(omega_inv).dot(Q.astype(float)))
+    cov_bl = cov + np.linalg.inv(M)
+
+    port.mu_bl = pd.DataFrame(mu_bl.T, columns=returns.columns)
+    port.cov_bl = pd.DataFrame(cov_bl, index=returns.columns, columns=returns.columns)
     port.cov_bl = port.cov_bl + pd.DataFrame(
         np.eye(port.cov_bl.shape[0]) * 1e-6, 
         index=port.cov_bl.index, 
@@ -50,16 +57,16 @@ def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars)
     # In Riskfolio, 'Sharpe' + rm='CDaR' maximizes the Ulcer Performance Index
 
     # Stage 1: Attempt to Maximize UPI (Return/CDaR)
-    port.alpha = CDAR_ALPHA
+    # port.alpha = CDAR_ALPHA
     # port.upperCDaR = CDAR_LIMIT
-    port.upperlng = 0.15
+    # port.upperlng = 0.15
 
     w_optimized = port.optimization(
         model='BL', 
         rm=RM_METHOD, 
         obj='Sharpe',
-        rf=RISK_FREE_RATE,
-        hist=True
+        rf=RISK_FREE_RATE / 252,
+        hist=False
     )
     
     # If the solver fails to find a solution satisfying both max Sharpe and the CDaR limit:
