@@ -79,15 +79,9 @@ def compose_bl_inputs(prices, volumes=None):
     # Since AGENTS.md provides specific weights for 13 factors which reside in Q_trend and Q_fundamental,
     # we'll assume Q_trend and Q_fundamental already contain their internal weighted sums.
     # The AGENTS.md total weight for Trend is ~0.3667 and Fundamental is ~0.6334.
-    
-    # W_trend = 0.3667
-    # W_fundamental = 0.6334
-    
-    # final_raw_q = (Q_trend * W_trend).add(Q_fundamental * W_fundamental, fill_value=0)
-    
-    # Add optional alpha and skew (using config weights as secondary adjustment or keeping them separate)
-    # To strictly follow AGENTS.md, we might focus on the 13 factors.
-    # But for resilience, we blend with macro/skew/alpha.
+    W_trend = 0.22
+    W_fundamental = 0.38
+
     ann_volatility = returns.std() * np.sqrt(252)
 
     trend_multiplier = (Q_trend - 0.5) * 2.0
@@ -96,8 +90,8 @@ def compose_bl_inputs(prices, volumes=None):
     Q_trend = trend_multiplier * ann_volatility * 0.5
     Q_fundamental = fundamental_multiplier * ann_volatility * 0.5
     
-    final_raw_q = (Q_trend * Q_WEIGHTS['trend']) \
-                .add(Q_fundamental * Q_WEIGHTS['fundamental'], fill_value=0) \
+    final_raw_q = (Q_trend * W_trend) \
+                .add(Q_fundamental * W_fundamental, fill_value=0) \
                 .add(Q_skew * Q_WEIGHTS['skew'], fill_value=0) \
                 .add(Q_alpha * Q_WEIGHTS['alpha'], fill_value=0)
     
