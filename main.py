@@ -16,7 +16,8 @@ import pandas as pd
 import yfinance as yf
 from config import (
     BACKTEST_INITIAL_CAPITAL, DATA_DIR,
-    PRICE_START, PRICE_END, USE_CACHE_DATA
+    PRICE_START, PRICE_END, USE_CACHE_DATA,
+    BACKTEST_ENABLE
 )
 from data.universe import UniverseManager
 from data.loader import (
@@ -121,6 +122,8 @@ def main():
     current_live_weights = my_quant_strategy(all_prices_krw)
     export_portfolio(current_live_weights, "outputs/final_weights.csv")
 
+    if not BACKTEST_ENABLE:
+        exit()
     # --- WALK-FORWARD BACKTESTING ---
     print("\n📊 [BACKTEST] Running Walk-Forward Resilience Simulation...")
     backtester = ResilientBacktester(all_prices_krw, strategy_func=my_quant_strategy)

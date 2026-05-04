@@ -12,7 +12,7 @@ from pathlib import Path
 # ============================================================
 # DATA PIPELINE
 # ============================================================
-USE_CACHE_DATA = True
+USE_CACHE_DATA = False
 DART_API_KEY = "013401953d0a2a176ebd48d36f204a73b7033107"
 
 # ============================================================
@@ -183,7 +183,7 @@ BACKTEST_SCENARIOS = {
 
 BACKTEST_INITIAL_CAPITAL = 1_000_000   # USD / KRW handled per asset in engine.py
 BACKTEST_COMMISSION      = 0.001       # 0.1 % per trade
-
+BACKTEST_ENABLE = True
 
 # ============================================================
 # EVALUATION METRICS (Phase 7)
