@@ -122,6 +122,28 @@ def main():
     current_live_weights = my_quant_strategy(all_prices_krw)
     export_portfolio(current_live_weights, "outputs/final_weights.csv")
 
+    # Save OHLCV data for final tickers
+    final_tickers = current_live_weights[current_live_weights > 0].index.tolist()
+    ohlcv_dir = "outputs/ohlcv"
+    
+    if os.path.exists(ohlcv_dir):
+        shutil.rmtree(ohlcv_dir)
+    os.makedirs(ohlcv_dir, exist_ok=True)
+    
+    if final_tickers:
+        print(f"📥 Saving OHLCV data for {len(final_tickers)} tickers to {ohlcv_dir}...")
+        for ticker in final_tickers:
+            yf_ticker = ticker
+            if str(ticker)[0].isdigit():
+                yf_ticker = f"{ticker.split('-')[0]}.KS"
+            
+            try:
+                data = yf.download(yf_ticker, start=PRICE_START, end=PRICE_END, auto_adjust=True, progress=False)
+                if not data.empty:
+                    data.to_csv(os.path.join(ohlcv_dir, f"{ticker}.csv"))
+            except Exception as e:
+                print(f"      ⚠️ Failed to download OHLCV for {ticker}: {e}")
+
     if not BACKTEST_ENABLE:
         exit()
     # --- WALK-FORWARD BACKTESTING ---

@@ -160,7 +160,7 @@ RISK_FREE_RATE      = 0.04            # annualized (used in UPI & Calmar)
 # ============================================================
 MAX_ASSETS          = 10              # final portfolio: top-N by weight
 MIN_WEIGHT          = 0.01            # floor: 1 % per asset
-MAX_WEIGHT_SINGLE   = 0.50            # ceiling: 30 % per asset
+MAX_WEIGHT_SINGLE   = 0.30            # ceiling: 30 % per asset
 LIQUIDITY_WINDOW    = 20              # days for avg-volume weight cap
 
 
