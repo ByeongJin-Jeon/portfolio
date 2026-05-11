@@ -44,6 +44,7 @@ UniverseManager → DataLoader → [ WALK-FORWARD RECURSION ]
 | **Fundamental Engine** | `signals/fundamental.py` | **Hybrid KR Engine**: Integrates **DART API** (via `OpenDartReader`) and Naver Finance for deep KR fundamental coverage (Equity, NI, OP). Features daily local caching of views. |
 | **Idiosyncratic Alpha** | `portfolio/factor_loading.py` | OLS regression against Fama-French 5-Factor daily data. Assets with positive residuals receive alpha views; residual variance populates the **Omega matrix**. |
 | **Black-Litterman Optimizer** | `optimization/black_litterman.py` | Combines HRP prior, 13-factor Q-views, and Omega. Optimizes for **max Ulcer Performance Index (UPI)** subject to CDaR ≤ 15%. |
+| **Execution Planner** | `portfolio/execution.py` | Calculates **Sleep-Trading Limit Buy Prices** using a modified Chandelier Exit logic based on volatility (ATR) and recent highs. |
 | **Backtest Engine** | `backtest/engine.py` | **Walk-Forward Controller**. Executes monthly rebalancing on actual last trading days. Re-filters candidates at every step to eliminate survival bias. |
 | **Evaluation Metrics** | `evaluation/metrics.py` | Computes MDD, Ulcer Index (`√mean(drawdown²)`), Serenity Ratio, and Calmar Ratio from the `vectorbt` portfolio object. |
 
@@ -58,6 +59,16 @@ To ensure the engine's resilience is empirically valid, the backtest engine (`ba
 3. **Point-in-Time Data**: The entire optimization pipeline (`my_quant_strategy`) is called using ONLY `prices.loc[:current_date]`.
 4. **Time-Machine Mode**: In `signals/composer.py`, the system detects if `current_date` is in the past. If so, it bypasses live-only signals and uses neutral priors.
 5. **Liquidity Realism**: Weight caps are recalculated at every step based on the rolling 20-day volume *at that specific point in time*.
+
+---
+
+## Sleep-Trading Execution Guide
+
+For live implementation, the engine generates a **Sleep-Trading Plan** to facilitate limit buy orders. This allows users to set orders once and let them execute during market hours without constant monitoring.
+
+- **Chandelier Exit Logic**: The system calculates a "Safety Pin" (n-day highest high) and subtracts a volatility-adjusted "Shield" (k × ATR).
+- **Yesterday's Data Anchor**: To prevent "chasing" intraday noise, all calculations are anchored to the previous day's close (`shift(1)`), ensuring stable execution prices.
+- **Automated Output**: A dedicated CSV guide is generated with tickers, target weights, current prices, and the specific limit buy prices required for the allocation.
 
 ---
 
@@ -156,6 +167,7 @@ The pipeline will:
 | Path | Contents |
 | :--- | :--- |
 | `outputs/final_weights.csv` | Ticker → weight mapping for active positions only |
+| `outputs/execution_limit_prices.csv` | Tonight's limit buy guide with volatility-adjusted prices |
 | `data/cache/universe_prices.csv` | Cached KRW-converted price matrix |
 | `data/cache/fundamental_cache.csv` | Daily cached fundamental signal scores |
 
@@ -193,6 +205,7 @@ The pipeline will:
 ├── portfolio/
 │   ├── factor_loading.py        # FF5 OLS regression → idio variance + alpha
 │   ├── constraints.py           # Liquidity caps with panic floor
+│   ├── execution.py             # Sleep-trading limit price planner
 │   └── selector.py              # Top-10 selection + CSV export
 ├── optimization/
 │   ├── hrp.py                   # HRP equilibrium prior (riskfolio)

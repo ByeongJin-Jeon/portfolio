@@ -15,7 +15,7 @@ import time
 import pandas as pd
 import yfinance as yf
 from config import (
-    BACKTEST_INITIAL_CAPITAL, DATA_DIR,
+    BACKTEST_INITIAL_CAPITAL, DATA_DIR, OUTPUT_DIR,
     PRICE_START, PRICE_END, USE_CACHE_DATA,
     BACKTEST_ENABLE
 )
@@ -30,6 +30,7 @@ from optimization.hrp import get_hrp_prior_weights
 from optimization.black_litterman import construct_bl_model
 from portfolio.selector import select_final_portfolio, export_portfolio
 from portfolio.constraints import calculate_liquidity_caps
+from portfolio.execution import generate_execution_plan
 from backtest.engine import ResilientBacktester
 from evaluation.metrics import calculate_resilience_suite
 
@@ -120,11 +121,12 @@ def main():
     # --- CURRENT LIVE VIEW ---
     print("\n🔮 [CURRENT LIVE VIEW] Generating Today's Optimal Portfolio...")
     current_live_weights = my_quant_strategy(all_prices_krw)
-    export_portfolio(current_live_weights, "outputs/final_weights.csv")
+    # exit()
+    export_portfolio(current_live_weights, os.path.join(OUTPUT_DIR, "final_weights.csv"))
 
     # Save OHLCV data for final tickers
     final_tickers = current_live_weights[current_live_weights > 0].index.tolist()
-    ohlcv_dir = "outputs/ohlcv"
+    ohlcv_dir = os.path.join(OUTPUT_DIR, "ohlcv")
     
     if os.path.exists(ohlcv_dir):
         shutil.rmtree(ohlcv_dir)
@@ -143,6 +145,15 @@ def main():
                     data.to_csv(os.path.join(ohlcv_dir, f"{ticker}.csv"))
             except Exception as e:
                 print(f"      ⚠️ Failed to download OHLCV for {ticker}: {e}")
+
+    exec_df = generate_execution_plan(current_live_weights, n_lookback=20, k_value=3.0)
+
+    print("\n--- 💸 Tonight's Limit Buy Guide ---")
+    print(exec_df.to_string(index=False))
+
+    # Save as CSV for easy viewing when opening HTS/MTS later!
+    exec_df.to_csv(os.path.join(OUTPUT_DIR, "execution_limit_prices.csv"), encoding="utf-8-sig", index=False)
+    print(f"✅ Buy guide saved to {OUTPUT_DIR}/execution_limit_prices.csv!")
 
     if not BACKTEST_ENABLE:
         exit()

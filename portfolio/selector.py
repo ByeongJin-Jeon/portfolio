@@ -18,7 +18,5 @@ def select_final_portfolio(bl_weights, liquidity_caps, kr_floor=0.06):
 
 def export_portfolio(weights, path):
     """Outputs the final allocation to terminal and CSV."""
-    print("\n--- GEOPOLITICALLY RESILIENT PORTFOLIO (TOP 10) ---")
     active_weights = weights[weights > 0].sort_values(ascending=False)
-    print(active_weights*100)
     active_weights.to_csv(path, encoding=CSV_ENCODING)

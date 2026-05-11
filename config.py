@@ -189,4 +189,4 @@ BACKTEST_ENABLE = True
 # EVALUATION METRICS (Phase 7)
 # ============================================================
 ULCER_WINDOW        = 14              # rolling window for Ulcer Index
-CALMAR_WINDOW       = 36             # months for Calmar Ratio calculation
+CALMAR_WINDOW       = 36              # months for Calmar Ratio calculation
