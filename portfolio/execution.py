@@ -41,9 +41,11 @@ def _calculate_single_asset_limit(ticker, n=20, k=3.0):
         tr = pd.concat([high_low, high_pc, low_pc], axis=1).max(axis=1)
         atr = tr.rolling(window=n).mean().iloc[-1]  # Average volatility over recent n days
         
+        # Current price (or most recent closing price)
+        current_price = df['Close'].iloc[-1]
+        
         # 3️⃣ Final Line of Defense (Sleep-trading limit buy price)
         limit_price = min(rolling_max - (k * atr), current_price)
-        current_price = df['Close'].iloc[-1] # Current price (or most recent closing price)
         
         return current_price, limit_price
         
