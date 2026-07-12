@@ -17,7 +17,7 @@ class UniverseManager:
 
     @staticmethod
     def get_nasdaq100_tickers():
-        url = 'https://en.wikipedia.org/wiki/Nasdaq-100'
+        url = 'https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies'
         req = request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with request.urlopen(req) as response:
             table = pd.read_html(response, match='Ticker')
