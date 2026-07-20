@@ -1,35 +1,101 @@
-# Geopolitically Resilient Multi-Asset Allocation Engine
+# Geopolitically Resilient Multi-Asset Allocation Engine — v2.0
 
-A **Resilience-First Quantitative Allocation Engine** engineered to maintain structural integrity during systemic market failures — including the 2008 Global Financial Crisis, the 2020 COVID Liquidity Crisis, and projected 2026 geopolitical instabilities.
+A **Resilience-First Institutional Portfolio Engine** engineered for the KRX + global equity universe. v2.0 replaces the previous heuristic `HRP + BL + CDaR` stack with a mathematically coherent five-layer architecture: **IC-scaled fundamental alpha → orthogonalized factor risk model → constrained QP optimizer → ETF shelter sleeve → macro risk governor**.
 
-The system integrates **Hierarchical Risk Parity (HRP)** as a Bayesian prior, **Black-Litterman (BL)** optimization with a proprietary **4-Pillar Alpha Engine**, and **Conditional Drawdown at Risk (CDaR)** constraints. The engine now features a **Walk-Forward Time Machine** that executes monthly rolling rebalancing across historical crisis windows without look-ahead bias.
+---
+
+## What Changed in v2.0
+
+| Dimension | v1.x | v2.0 |
+| :--- | :--- | :--- |
+| **Alpha** | Mixed trend + fundamental Z-score views fed to BL | Pure IC-scaled fundamental alpha: `μᵢ = IC × σᵢ × zᵢ` (annualized decimal) |
+| **Risk Model** | Sample covariance (no shrinkage) | EWMA (252d, halflife=63) + Ledoit-Wolf shrinkage + Gram-Schmidt factor orthogonalization |
+| **Optimizer** | Riskfolio HCPortfolio + BL posterior | `cvxpy` mean-risk QP with CVaR & CDaR overlays (Rockafellar-Uryasev formulation) |
+| **Safe Haven** | Hard-coded BL view overrides (`+2.0`) | ETF Shelter Sleeve — structural floor constraints tightened by macro regime |
+| **Macro** | Binary kill-switches (VIX/FX) | Continuous macro risk governor → multipliers → sleeve/currency bound adjustments |
+| **Alpha unit correctness** | Mixed Z-score + variance units (λᵣ ungrounded) | Dimensionally consistent: μ in annualized return units, λᵣ = 3.0 is interpretable CARA |
+| **Factor multicollinearity** | Raw one-hot factor exposures | Gram-Schmidt orthogonalization in priority order: sleeve → country → sector → currency |
+| **CVaR sign convention** | Inconsistent | Uniform loss convention throughout, consistent with Riskfolio-Lib |
 
 ---
 
 ## System Architecture
 
-The engine executes a recursive **Walk-Forward Pipeline**. In backtest mode, it iterates through time, presenting the optimizer only with data available up to each rebalance date.
+```
+UniverseManager
+      │
+      ▼
+DataLoader (OHLCV, USE_CACHE_DATA bypass)
+      │  apply_currency_conversion (all prices → KRW base)
+      │
+      ▼
+EligibilityFilter (candidate_frame, basic ADV / history filters)
+      │
+      ├──────────────────────────────────────────────┐
+      ▼                                              ▼
+MacroRiskGovernor                         FactorRiskModel
+(VIX + FX regime → stress_regime)        (EWMA+LW Sigma, Gram-Schmidt B_orth, F)
+      │                                              │
+      ▼                                              │
+Sleeve / CCY Bound Adjustments                       │
+      │                                              │
+      ├──────────────────────────────────────────────┤
+      ▼                                              ▼
+FundamentalAlphaEngine                    OptionsSkewEngine
+(DART/Naver KR + yfinance US)             (OTM IV → uncertainty penalty u_i)
+      │                                              │
+      ▼                                              ▼
+  μᵢ = IC × σᵢ × zᵢ               gamma_u × u_i  +  gamma_l × l_i
+      │                                              │
+      └──────────────── μ̃ (mu_tilde) ───────────────┘
+                           │
+                           ▼
+              [Optional] Black-Litterman Posterior
+                           │
+                           ▼
+              LiquidityParticipationCaps (κ = 10% ADV)
+                           │
+                           ▼
+             cvxpy Mean-Risk QP Optimizer
+             min  −μ̃'w + λᵣ w'Σw + λₕ‖w−wᵣₑf‖²
+             s.t. Σwᵢ=1, box, sleeve, CCY, sector, country,
+                  CVaR_α(w) ≤ L_cvar, CDaR_α(w) ≤ L_cdar
+                           │
+                    (fallback: HRP weights)
+                           │
+                           ▼
+             PortfolioValidator + Reports
+             (exposure, risk decomposition, alpha)
+                           │
+                           ▼
+             ExecutionOrderPlanner (limit prices)
+                           │
+                           ▼
+             HistoricalRiskReplay Backtest
+             (GFC 2008 / COVID 2020 / MIDEAST 2026)
+```
 
-```
-UniverseManager → DataLoader → [ WALK-FORWARD RECURSION ]
-                                      ↓ (Monthly)
-                         my_quant_strategy(past_prices)
-                                      ↓
-                SignalComposer → FactorLoading → HRP Prior
-                       ↓               ↓              ↓
-                Time-Machine    Idio. Variance   Bayesian Prior
-                 (Macro/Skew)    (Omega matrix)
-                                      ↓
-                        Black-Litterman Optimization
-                         (CDaR ≤ 15%, Maximize UPI)
-                                      ↓
-                         Liquidity-Capped Selector
-                                      ↓
-                        [ vectorbt Portfolio Engine ]
-                                      ↓
-                      3-Scenario Resilience Scorecard
-                   (GFC 2008 / COVID 2020 / MIDEAST 2026)
-```
+---
+
+## 16-Step Pipeline (`main.py`)
+
+| Step | Description |
+| :---: | :--- |
+| **1** | Load config + environment |
+| **2** | Universe metadata (`UniverseManager`) |
+| **3** | Fetch / cache price + volume data (`USE_CACHE_DATA` bypass) |
+| **4** | Build candidate frame — eligibility filter (no trend signal used) |
+| **5** | Apply currency conversion (all prices → KRW base) |
+| **6** | Macro risk governor → `stress_regime`, adjusted sleeve & CCY bounds |
+| **7** | Factor risk model: EWMA + Ledoit-Wolf + Gram-Schmidt orthogonalization |
+| **8** | IC-scaled fundamental alpha (`μᵢ = IC × σᵢ × zᵢ`, equity only; ETFs get `μ=0`) |
+| **9–10** | Assemble `μ̃ = μ − γ_u·u − γ_l·l` |
+| **11** | Optional Black-Litterman posterior adjustment (`ENABLE_BLACK_LITTERMAN`) |
+| **12** | Liquidity participation-rate caps (κ = 10% ADV) |
+| **13** | Solve constrained mean-risk QP via `cvxpy` (CVaR + CDaR overlays) |
+| **14** | Validate weights; generate exposure / risk / alpha reports |
+| **15** | Execution order plan with limit buy prices |
+| **16** | `HistoricalRiskReplay` backtest across all scenarios |
 
 ---
 
@@ -37,94 +103,154 @@ UniverseManager → DataLoader → [ WALK-FORWARD RECURSION ]
 
 | Module | File(s) | Role |
 | :--- | :--- | :--- |
-| **Universe Construction** | `data/universe.py` | Scrapes S&P 500, NASDAQ-100, Dow Jones from Wikipedia; KOSPI 200 via `FinanceDataReader`. Merges with Core & Defensive ETF lists from `config.py`. |
-| **Data Ingestion** | `data/loader.py` | Fetches OHLCV via `yfinance`. Features **Local Cache Support** (`USE_CACHE_DATA`) to bypass redundant downloads. Prices converted to KRW with automated FX handling. |
-| **Signal Composition** | `signals/composer.py` | Orchestrates the **13-Factor Alpha Engine**. Includes **Time-Machine Mode** and **Quality Tilt** logic during macro stress events. |
-| **Trend Engine** | `signals/trend.py` | Uses yesterday's data (`shift(1)`) to compute **Minervini QM Scoring**, 6M Momentum, Volume/Price CV, Upside Potential, and the **Cash Flow Per Share (CPS) Trend Line**. |
-| **Fundamental Engine** | `signals/fundamental.py` | **Hybrid KR Engine**: Integrates **DART API** (via `OpenDartReader`) and Naver Finance for deep KR fundamental coverage (Equity, NI, OP). Features daily local caching of views. |
-| **Idiosyncratic Alpha** | `portfolio/factor_loading.py` | OLS regression against Fama-French 5-Factor daily data. Assets with positive residuals receive alpha views; residual variance populates the **Omega matrix**. |
-| **Black-Litterman Optimizer** | `optimization/black_litterman.py` | Combines HRP prior, 13-factor Q-views, and Omega. Optimizes for **max Ulcer Performance Index (UPI)** subject to CDaR ≤ 15%. |
-| **Execution Planner** | `portfolio/execution.py` | Calculates **Sleep-Trading Limit Buy Prices** using a modified Chandelier Exit logic based on volatility (ATR) and recent highs. |
-| **Backtest Engine** | `backtest/engine.py` | **Walk-Forward Controller**. Executes monthly rebalancing on actual last trading days. Re-filters candidates at every step to eliminate survival bias. |
-| **Evaluation Metrics** | `evaluation/metrics.py` | Computes MDD, Ulcer Index (`√mean(drawdown²)`), Serenity Ratio, and Calmar Ratio from the `vectorbt` portfolio object. |
+| **Universe Construction** | `data/universe.py` | Scrapes S&P 500, NASDAQ-100, Dow Jones from Wikipedia; KOSPI 200 via `FinanceDataReader`. Annotates each ticker with `sleeve`, `country`, `sector`, `trading_currency`, `is_etf_shelter`. |
+| **Data Ingestion** | `data/loader.py` | Fetches OHLCV via `yfinance`. Local cache support (`USE_CACHE_DATA`). Prices converted to KRW base. Computes ADV for eligibility and liquidity caps. |
+| **Macro Risk Governor** | `signals/macro.py` | Fetches live VIX + USD/KRW. Classifies `stress_regime` ∈ {`normal`, `elevated`, `stress`}. Produces multipliers that tighten safe-haven sleeve floors and CCY bounds. |
+| **Fundamental Alpha** | `signals/fundamental.py` | **Hybrid KR Engine**: DART API (`OpenDartReader`) + Naver Finance for KRX equities; `yfinance` for US equities. 4-pillar Z-scores → IC scaling → `μᵢ` in annualized return units. Daily local caching. |
+| **Uncertainty Penalty** | `signals/options_skew.py` | OTM Put IV − Call IV → `uᵢ` penalty term. Penalizes assets with elevated tail-risk pricing. ETF shelters receive `u=0`. |
+| **Signal Assembler** | `signals/composer.py` | Assembles `μ̃ = μ − γ_u·u − γ_l·l`. Calls macro governor for constraint adjustments. No trend signals, no BL view composition, no defensive overrides. |
+| **Factor Risk Model** | `portfolio/factor_loading.py` | Builds one-hot exposure matrix B. Gram-Schmidt orthogonalization (sleeve → country → sector → currency). EWMA factor covariance F + Ledoit-Wolf shrinkage. Specific risk floor `D_ii ≥ 1e-4`. Total: `Σ = B_orth F B_orth' + D`. |
+| **QP Optimizer** | `optimization/mean_risk.py` | `cvxpy` solver. Rockafellar-Uryasev CVaR/CDaR constraints (loss convention). Falls back to HRP on solver failure. |
+| **HRP Fallback** | `optimization/hrp.py` | Riskfolio `HCPortfolio`, Ward linkage, Pearson distance. Used as fallback when QP is infeasible and as `w_ref`. |
+| **Optional BL** | `optimization/black_litterman.py` | Analyst view overlay. Disabled by default (`ENABLE_BLACK_LITTERMAN = False`). |
+| **Portfolio Constraints** | `portfolio/constraints.py` | Builds all `cvxpy` constraint objects: box, sleeve, CCY, sector, country, liquidity participation caps. |
+| **Portfolio Reports** | `portfolio/selector.py` | Weight validation, exposure report (sleeve/country/sector/CCY), risk decomposition, alpha attribution. |
+| **Execution Planner** | `portfolio/execution.py` | Generates limit buy prices using ATR-based Chandelier logic anchored to yesterday's close (`shift(1)`). |
+| **Backtest Engine** | `backtest/engine.py` | `HistoricalRiskReplay`: applies static optimized weights to historical price windows. `SnapshotWalkForward`: forward-only replay using stored decision snapshots. |
+| **Evaluation Metrics** | `evaluation/metrics.py` | MDD, Ulcer Index (`√mean(DD²)`), Serenity Ratio, Calmar Ratio from `vectorbt` portfolio objects. |
 
 ---
 
-## The Walk-Forward "Time Machine"
+## Alpha Engine — 4-Pillar Fundamental Model
 
-To ensure the engine's resilience is empirically valid, the backtest engine (`backtest/engine.py`) operates under a strict **Walk-Forward Protocol**:
+All alphas are computed cross-sectionally, Z-scored, and then IC-scaled into annualized return units. **ETF shelter assets receive `μ = 0` by design** — they enter the portfolio purely via sleeve floor constraints, not alpha competition.
 
-1. **Monthly Rebalancing**: Steps through time using actual end-of-month trading dates.
-2. **Dynamic Candidate Filtering**: At each rebalance step, the system re-calculates momentum leaders from the full universe using only data available *then*.
-3. **Point-in-Time Data**: The entire optimization pipeline (`my_quant_strategy`) is called using ONLY `prices.loc[:current_date]`.
-4. **Time-Machine Mode**: In `signals/composer.py`, the system detects if `current_date` is in the past. If so, it bypasses live-only signals and uses neutral priors.
-5. **Liquidity Realism**: Weight caps are recalculated at every step based on the rolling 20-day volume *at that specific point in time*.
-
----
-
-## Sleep-Trading Execution Guide
-
-For live implementation, the engine generates a **Sleep-Trading Plan** to facilitate limit buy orders. This allows users to set orders once and let them execute during market hours without constant monitoring.
-
-- **Chandelier Exit Logic**: The system calculates a "Safety Pin" (n-day highest high) and subtracts a volatility-adjusted "Shield" (k × ATR).
-- **Yesterday's Data Anchor**: To prevent "chasing" intraday noise, all calculations are anchored to the previous day's close (`shift(1)`), ensuring stable execution prices.
-- **Automated Output**: A dedicated CSV guide is generated with tickers, target weights, current prices, and the specific limit buy prices required for the allocation.
-
----
-
-## The 13-Factor Alpha Engine
-
-Q-views are composed as a weighted sum of four independent signal pillars. The **Fundamental Pillar** now uses a high-fidelity hybrid engine for Korean assets.
-
-| Pillar | Default Weight | Key Sub-Factors |
+| Pillar | Weight | Key Sub-Factors |
 | :--- | :---: | :--- |
-| **Fundamental** | 40% | **KRX**: DART API + Naver Crawler (Equity, OP, NI). **US**: yfinance. 8 factors including Innovative ROE and FCF Yield. |
-| **Technical Trend** | 20% | Minervini QM Score, 6M Return, Volume/Price CV, Upside Potential, CPS Trend Line |
-| **Idiosyncratic Alpha** | 20% | Fama-French 5-Factor OLS residuals (rolling 20-day mean) |
-| **Options Skew** | 20% | OTM Put IV − Call IV (Bearish/Bullish view based on tail-risk pricing) |
+| **Valuation** | 35% | Earnings Yield, FCF Yield, Operating Cash Yield, Book-to-Price |
+| **Quality / Profitability** | 25% | Gross Profit-to-Assets, ROE, EBITDA Interest Coverage |
+| **Balance Sheet Health** | 25% | Debt-to-Equity, Current Ratio, Cash-to-Assets |
+| **Capital Discipline** | 15% | Capex-to-OCF, R&D-to-Revenue |
+
+### IC Scaling (Grinold-Kahn)
+
+```
+μᵢ = IC × σᵢ × zᵢ
+```
+
+- `IC = 0.04` (assumed; calibrate via cross-validation as snapshots accumulate in `outputs/snapshots/`)
+- `σᵢ` = annualized specific risk from the factor model
+- `zᵢ` = cross-sectional composite Z-score
+
+This ensures `μᵢ` is dimensionally consistent with `w'Σw` in the QP objective, making `λᵣ = 3.0` an interpretable CARA risk-aversion coefficient.
 
 ---
 
-## Macro Risk Layers
+## Factor Risk Model
 
-Three independent kill-switches operate in the signal composition stage with dynamic tactical adjustments:
+```
+Σ = B_orth × F × B_orth' + D
+```
 
-**1. Global VIX Kill-Switch** (`VIX_KILLSWITCH = 30`)
-- If `^VIX ≥ 30`, the system enters **Safe-Haven Mode**.
-- **Tactical Adjustments**:
-    - Defensive ETF Q-views are set to `+2.0` (Hard Buy).
-    - All Equity Q-views are set to `-1.0` (Hard Sell).
-- **Quality Tilt**: During volatility spikes, the engine applies a multiplier to quality-linked fundamental factors.
-- Confidence scalar: `1 + max(0, (VIX − 20) / 20)` inflates the Omega uncertainty matrix, widening asset view intervals.
+| Component | Specification |
+| :--- | :--- |
+| **B_orth** | One-hot exposures Gram-Schmidt orthogonalized in priority: `sleeve → country → sector → currency` |
+| **F** | Factor return covariance, EWMA window=252d, halflife=63d, Ledoit-Wolf shrinkage |
+| **D** | Diagonal specific risk, floor `D_ii ≥ 1e-4` |
 
-**2. KR FX Kill-Switch** (`FX_KILLSWITCH_LIMIT = 5%`)
-- If the 5-day USD/KRW range exceeds 5%, all KRX-side Q-views are zeroed.
-- Capital is implicitly redirected to USD-denominated assets.
+Gram-Schmidt orthogonalization removes multicollinearity between factor groups. Higher-priority groups (sleeve, country) are projected out of lower-priority columns (sector, currency) before estimating factor covariance.
 
-**3. Risk-On vs. Risk-Off Tactical Tilt**
-- **Risk-On (Kill-Switch Off)**: Defensive ETFs are penalized with a `-2.0` view.
-- **Risk-Off (Kill-Switch On)**: Stocks are penalized (`-1.0`) while Defensive ETFs are boosted (`+2.0`).
+---
+
+## ETF Shelter Architecture
+
+Safe-haven ETFs are treated as a **structural sleeve**, not alpha bets. They are excluded from fundamental scoring and receive `μ = 0`. Sleeve floors are enforced as hard QP constraints and are tightened by the macro risk governor under stress.
+
+**Shelter Tickers** (`config.py`):
+```
+US:  TLT, IEF, SGOV, GLD, DBC
+KR:  114260.KS (KODEX 국채10년), 148070.KS, 456880.KS, 069500.KS, 139260.KS
+```
+
+**Sleeve bounds** (base → tightened under stress):
+
+| Sleeve | Base Min | Base Max | Under Stress (floor +) |
+| :--- | :---: | :---: | :--- |
+| `global_equity` | 20% | 80% | — |
+| `safe_haven_bond` | 5% | 40% | +5% (elevated), +10% (stress) |
+| `cash` | 5% | 30% | +5% (elevated/FX), +10% (stress) |
+| `safe_haven_commodity` | 0% | 15% | +5% (stress) |
+| `commodity` | 0% | 15% | — |
+| `equity_index` | 0% | 20% | — |
+
+---
+
+## Macro Risk Governor
+
+The macro governor runs at Step 6 and produces constraint multipliers that adjust all sleeve and CCY bounds before the QP is built. It **does not inject directional alpha views**.
+
+| Regime | Trigger | Effect |
+| :--- | :--- | :--- |
+| `normal` | VIX < 20 | Base sleeve + CCY bounds |
+| `elevated` | 20 ≤ VIX < 30 | Safe-haven bond floor +5%, Cash floor +5% |
+| `stress` | VIX ≥ 30 | Safe-haven bond floor +10%, Cash floor +10%, Commodity floor +5% |
+| `fx_stress` | 5d USD/KRW range ≥ 5% | Cash floor +5% (regardless of VIX regime) |
 
 ---
 
 ## Optimization Stack
 
 ```
-HRP Prior (riskfolio HCPortfolio, Ward linkage, Pearson distance)
-    ↓
-Black-Litterman posterior (δ=2.5, τ=0.05, Omega=idio_var×τ)
-    ↓
-[Stage 1] Maximize Sharpe (rm=CVaR) subject to CDaR ≤ 15%
-    ↓ (if solver fails)
-[Stage 2] Minimize CDaR Risk (no constraint, ECOS solver)
-    ↓ (if solver fails again)
-[Stage 3] Return raw HRP weights
+μ̃ = μ − γ_u × u − γ_l × l
+           │
+           ▼
+cvxpy QP:
+  minimize  −μ̃'w + λᵣ·w'Σw + λₕ·‖w − wᵣₑf‖²
+  subject to:
+    Σwᵢ = 1
+    MIN_WEIGHT ≤ wᵢ ≤ min(MAX_WEIGHT_SINGLE, liq_cap_i)
+    sleeve bounds  (macro-adjusted)
+    CCY bounds:    30% ≤ w_USD ≤ 70%,  30% ≤ w_KRW ≤ 70%
+    sector cap:    w_s ≤ 25%
+    country cap:   w_c ≤ 70%
+    CVaR_0.05(w) ≤ L_cvar = 20%    (Rockafellar-Uryasev, loss convention)
+    CDaR_0.05(w) ≤ L_cdar = 30%    (Rockafellar-Uryasev, loss convention)
+           │
+     (solver fails)
+           │
+           ▼
+     HRP fallback (Ward / Pearson, riskfolio)
 ```
 
-Portfolio constraints applied post-optimization:
-- Per-asset weight floor: 1% (`MIN_WEIGHT`)
-- Per-asset weight ceiling: 50% (`MAX_WEIGHT_SINGLE`), further capped by liquidity
-- Final selection: top 10 assets by weight (`MAX_ASSETS`). Zero-weight assets are automatically pruned from export.
+**Key optimizer parameters:**
+
+| Parameter | Value | Meaning |
+| :--- | :---: | :--- |
+| `lambda_r` | 3.0 | CARA risk aversion (interpretable after IC scaling) |
+| `lambda_h` | 0.25 | Holdings-stability regularizer (turnover control) |
+| `gamma_u` | 0.50 | Options-skew uncertainty penalty weight |
+| `gamma_l` | 0.25 | Liquidity penalty weight |
+| `kappa` | 10% | Max participation rate relative to 20d ADV |
+
+---
+
+## Backtest Engine
+
+Two backtest modes are available:
+
+**1. `HistoricalRiskReplay`** (production-ready)
+Applies the current optimized static weights to historical price windows. Fully valid because no future prices are used.
+
+**2. `SnapshotWalkForward`** (future capability)
+Replays the full alpha model across time using fundamental snapshots stored in `outputs/snapshots/`. Requires accumulated historical snapshots — not yet valid for early runs.
+
+**Scenario windows:**
+
+| Scenario | Window |
+| :--- | :--- |
+| GFC 2008 | 2007-07-01 → 2009-06-30 |
+| COVID 2020 | 2019-10-01 → 2021-03-31 |
+| MIDEAST 2026 | 2025-10-01 → present |
 
 ---
 
@@ -136,14 +262,15 @@ Portfolio constraints applied post-optimization:
 pip install -r requirements.txt
 ```
 
-Key libraries: `yfinance`, `OpenDartReader`, `FinanceDataReader`, `riskfolio-lib`, `vectorbt`, `statsmodels`.
+Key libraries: `yfinance`, `OpenDartReader`, `FinanceDataReader`, `cvxpy`, `riskfolio-lib`, `vectorbt`, `scikit-learn`, `statsmodels`.
 
 ### 2. Configure API Keys
 
 In `config.py`, set your **DART API Key** for KRX fundamental analysis:
+
 ```python
-DART_API_KEY = "your_api_key_here"
-USE_CACHE_DATA = True  # Enable to speed up repeated runs
+DART_API_KEY   = "your_dart_api_key_here"
+USE_CACHE_DATA = True   # bypass repeated downloads
 ```
 
 ### 3. Run the Pipeline
@@ -153,12 +280,14 @@ python main.py
 ```
 
 The pipeline will:
-1. Scan the full global universe (~800 tickers).
-2. Fetch/Load price data (with local caching support).
-3. Compute 4-pillar Q-views (using DART/Naver for KR assets with local view caching).
-4. Run HRP → Black-Litterman optimization with CDaR constraints.
-5. Export the final top-10 portfolio to `outputs/final_weights.csv`.
-6. Run all stress-test scenarios with a rigorous walk-forward protocol.
+1. Build full universe metadata (~800 tickers).
+2. Fetch or load cached OHLCV data.
+3. Classify macro regime (VIX + FX) and adjust sleeve/CCY bounds.
+4. Build the EWMA + Ledoit-Wolf + Gram-Schmidt factor risk model.
+5. Compute IC-scaled fundamental alpha (DART/Naver for KR; yfinance for US).
+6. Solve the constrained mean-risk QP with CVaR/CDaR overlays.
+7. Export the final portfolio, alpha report, and execution plan.
+8. Run stress-test scenario backtests.
 
 ---
 
@@ -166,10 +295,16 @@ The pipeline will:
 
 | Path | Contents |
 | :--- | :--- |
-| `outputs/final_weights.csv` | Ticker → weight mapping for active positions only |
-| `outputs/execution_limit_prices.csv` | Tonight's limit buy guide with volatility-adjusted prices |
+| `outputs/final_weights.csv` | Ticker → weight mapping for active positions |
+| `outputs/alpha_report.csv` | Per-asset `mu`, `mu_tilde`, `u`, `l`, composite Z-score |
+| `outputs/exposure_sleeve.csv` | Sleeve-level weight exposure |
+| `outputs/exposure_country.csv` | Country-level weight exposure |
+| `outputs/exposure_sector.csv` | Sector-level weight exposure |
+| `outputs/execution_plan.csv` | Limit buy prices (ATR-based Chandelier, yesterday's data) |
 | `data/cache/universe_prices.csv` | Cached KRW-converted price matrix |
+| `data/cache/universe_volumes.csv` | Cached volume matrix |
 | `data/cache/fundamental_cache.csv` | Daily cached fundamental signal scores |
+| `outputs/snapshots/` | Per-run decision snapshots (for future walk-forward replay) |
 
 ---
 
@@ -177,13 +312,29 @@ The pipeline will:
 
 | Parameter | Default | Description |
 | :--- | :--- | :--- |
-| `USE_CACHE_DATA` | `True` | Use local CSV cache for prices/volumes |
-| `DART_API_KEY` | `...` | API Key for South Korea's DART financial system |
-| `VIX_KILLSWITCH` | 30.0 | VIX threshold for global risk-off |
-| `FX_KILLSWITCH_LIMIT` | 0.05 | 5-day USD/KRW range cap |
-| `CDAR_LIMIT` | 0.15 | Hard CDaR constraint (15%) |
-| `MAX_ASSETS` | 10 | Final portfolio asset count |
-| `PRICE_START` | 2006-01-01 | Historical data start (covers 2008 GFC) |
+| `USE_CACHE_DATA` | `True` | Load prices from local CSV cache |
+| `DART_API_KEY` | `...` | API Key for South Korea's DART system |
+| `IC_INITIAL` | `0.04` | Assumed information coefficient for IC scaling |
+| `ALPHA_WEIGHTS` | `{val:0.35, qual:0.25, bs:0.25, cd:0.15}` | 4-pillar composite score weights |
+| `COVARIANCE_WINDOW` | `252` | Rolling window for factor covariance (trading days) |
+| `EWMA_HALFLIFE` | `63` | EWMA halflife for factor return weighting |
+| `LEDOIT_WOLF_SHRINKAGE` | `True` | Apply Ledoit-Wolf shrinkage to factor covariance |
+| `FACTOR_PRIORITY` | `[sleeve, country, sector, currency]` | Gram-Schmidt orthogonalization order |
+| `OPTIMIZER_RISK_AVERSION` | `3.0` | CARA `λᵣ` (interpretable in annualized return units) |
+| `OPTIMIZER_HOLDING_REG` | `0.25` | Turnover regularizer `λₕ` |
+| `UNCERTAINTY_PENALTY` | `0.50` | Options-skew penalty weight `γ_u` |
+| `LIQUIDITY_PENALTY` | `0.25` | Liquidity penalty weight `γ_l` |
+| `CVAR_ALPHA` | `0.05` | CVaR tail probability |
+| `CVAR_LIMIT` | `0.20` | Max expected tail loss (loss convention) |
+| `CDAR_LIMIT` | `0.30` | Max conditional drawdown (loss convention) |
+| `MAX_WEIGHT_SINGLE` | `0.10` | Per-asset weight ceiling |
+| `MAX_WEIGHT_SECTOR` | `0.25` | Sector weight ceiling |
+| `MAX_WEIGHT_COUNTRY` | `0.70` | Country weight ceiling |
+| `MAX_ASSETS` | `20` | Max portfolio positions |
+| `MAX_PARTICIPATION_RATE` | `0.10` | Max fraction of 20d ADV (`κ`) |
+| `ENABLE_BLACK_LITTERMAN` | `False` | Toggle analyst BL view overlay |
+| `BACKTEST_ENABLE` | `True` | Run historical risk replay after optimization |
+| `PRICE_START` | `2006-01-01` | Historical data start (covers 2008 GFC) |
 
 ---
 
@@ -192,30 +343,34 @@ The pipeline will:
 ```
 .
 ├── config.py                    # Single source of truth for all parameters
-├── main.py                      # Pipeline orchestrator
+├── main.py                      # 16-step pipeline orchestrator
 ├── data/
-│   ├── universe.py              # Universe construction (Wikipedia + FDR)
-│   └── loader.py                # Data fetching, caching, filtering, FX conversion
+│   ├── universe.py              # Universe construction + metadata (sleeve/country/sector/CCY)
+│   └── loader.py                # OHLCV fetch, cache, eligibility filter, FX conversion, ADV
 ├── signals/
-│   ├── composer.py              # 4-pillar signal aggregator + macro filters
-│   ├── trend.py                 # MA alignment + envelope (vectorbt)
-│   ├── fundamental.py           # FCF yield + EPS momentum (yfinance + Naver)
-│   ├── options_skew.py          # Put-Call IV skew (yfinance options)
-│   └── macro.py                 # VIX kill-switch + TIPS tilt + FX watchdog
+│   ├── composer.py              # mu_tilde assembler + macro constraint dispatcher
+│   ├── fundamental.py           # 4-pillar IC-scaled alpha (DART/Naver KR + yfinance US)
+│   ├── options_skew.py          # OTM IV skew → uncertainty penalty u_i
+│   ├── macro.py                 # VIX + FX regime → stress_regime + constraint multipliers
+│   └── trend.py                 # (legacy — not used in production alpha pipeline)
 ├── portfolio/
-│   ├── factor_loading.py        # FF5 OLS regression → idio variance + alpha
-│   ├── constraints.py           # Liquidity caps with panic floor
-│   ├── execution.py             # Sleep-trading limit price planner
-│   └── selector.py              # Top-10 selection + CSV export
+│   ├── factor_loading.py        # EWMA + LW + Gram-Schmidt factor risk model
+│   ├── constraints.py           # cvxpy constraint builder (sleeve, CCY, sector, country, liq)
+│   ├── selector.py              # Validation + exposure / risk / alpha reports + CSV export
+│   └── execution.py             # ATR-based limit price planner (Chandelier, shift(1))
 ├── optimization/
-│   ├── hrp.py                   # HRP equilibrium prior (riskfolio)
-│   └── black_litterman.py       # BL model + CDaR-constrained UPI optimizer
+│   ├── mean_risk.py             # Primary cvxpy mean-risk QP (CVaR + CDaR overlays)
+│   ├── hrp.py                   # HRP fallback (riskfolio, Ward / Pearson)
+│   └── black_litterman.py       # Optional BL posterior adjustment
 ├── backtest/
-│   └── engine.py                # Multi-scenario vectorbt backtester
+│   └── engine.py                # HistoricalRiskReplay + SnapshotWalkForward
 ├── evaluation/
 │   └── metrics.py               # MDD, Ulcer Index, Serenity & Calmar ratios
 └── outputs/
-    └── final_weights.csv        # Generated portfolio allocation
+    ├── final_weights.csv
+    ├── alpha_report.csv
+    ├── execution_plan.csv
+    └── snapshots/               # Per-run decision snapshots for walk-forward
 ```
 
 ---
@@ -223,3 +378,4 @@ The pipeline will:
 ### Made by
 - Byeong Jin Jeon (bjjeon0913@gmail.com)
 - 떠들이 & 존버하고 나아가며 조율하는 투자의 군주 (https://www.youtube.com/@%EC%97%89%EB%93%9C%EB%A3%A8)
+
