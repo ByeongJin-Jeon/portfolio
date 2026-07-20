@@ -1,23 +1,51 @@
 # -*- coding: utf-8 -*-
-import riskfolio as rp
-from config import SEGMENT_MAP, HRP_LINKAGE_METHOD, HRP_DISTANCE_METRIC
+"""
+optimization/hrp.py
+===================
+HRP benchmark / fallback optimizer.
 
-def get_hrp_prior_weights(returns):
+Role in the new architecture:
+  - PRIMARY: Not the production optimizer. Use optimization/mean_risk.py for that.
+  - FALLBACK: Called when the cvxpy QP fails to converge.
+  - BENCHMARK: Used for risk attribution comparison only.
+
+HRP does not require an expected return vector (mu), which makes it
+a useful robustness check independent of the alpha model.
+"""
+
+import numpy as np
+import pandas as pd
+import riskfolio as rp
+from config import HRP_LINKAGE_METHOD, HRP_DISTANCE_METRIC
+
+
+def get_hrp_weights(returns: pd.DataFrame) -> pd.Series:
     """
-    Calculates the 'Equilibrium' weights using HRP.
-    This acts as the 'Prior' for our Black-Litterman model.
+    Computes HRP (Hierarchical Risk Parity) weights as a benchmark/fallback.
+
+    Does NOT require a mu vector — uses empirical covariance only.
+    Returns equal-weight allocation if HRP fails.
     """
-    # Initialize the Portfolio object
-    port = rp.HCPortfolio(returns=returns)
-    
-    # Optimization: HRP doesn't require a mean vector (mu), making it robust
-    # to the 'noise' of 2026 geopolitical shifts.
-    hrp_weights = port.optimization(
-        model='HRP',
-        codependence=HRP_DISTANCE_METRIC,
-        linkage=HRP_LINKAGE_METHOD,
-        rm='MV',  # Standard variance as the risk measure for HRP
-        rf=0
-    )
-    
-    return hrp_weights
+    tickers = returns.columns.tolist()
+    n = len(tickers)
+    default = pd.Series(1.0 / n, index=tickers)
+
+    try:
+        port = rp.HCPortfolio(returns=returns)
+        hrp_df = port.optimization(
+            model="HRP",
+            codependence=HRP_DISTANCE_METRIC,
+            linkage=HRP_LINKAGE_METHOD,
+            rm="MV",
+            rf=0,
+        )
+        if hrp_df is None or hrp_df.empty:
+            return default
+        w = hrp_df.iloc[:, 0]
+        w = w.reindex(tickers).fillna(0.0)
+        total = w.sum()
+        if total > 1e-8:
+            return (w / total).rename("hrp_weights")
+        return default
+    except Exception:
+        return default

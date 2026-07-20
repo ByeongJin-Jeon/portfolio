@@ -1,447 +1,242 @@
 # -*- coding: utf-8 -*-
+"""
+signals/fundamental.py
+=======================
+Primary alpha engine for individual equity securities ONLY.
+
+ETF shelter assets are excluded before any scoring.
+mu_ETF = 0 is assigned in the main pipeline orchestration.
+
+Pipeline:
+  build_fundamental_snapshot_table  (equity tickers only)
+    -> compute_*_features
+    -> normalize_alpha_features   (cross-sectional Z-score)
+    -> build_composite_score      -> z_i (dimensionless)
+    -> scale_to_expected_return   -> mu_i = IC * sigma_i * z_i (annualized decimal)
+
+Missing data is tracked via data_quality_score, which feeds the u_i uncertainty penalty.
+"""
+
+import time
+import numpy as np
 import pandas as pd
 import yfinance as yf
-import numpy as np
-import requests
-import io
-import time
-import os
-import OpenDartReader
-from config import DART_API_KEY, DEFENSIVE_ETFS, CORE_ETFS
+from config import ALPHA_WEIGHTS, IC_INITIAL, DART_API_KEY, ETF_SHELTER_TICKERS
 
-def is_kr_ticker(ticker):
-    return str(ticker)[0].isdigit()
 
-def get_kr_fundamental(ticker):
+# ── data fetch helpers ────────────────────────────────────────────────────────
+
+def _safe(d: dict, key: str, default=np.nan) -> float:
+    v = d.get(key)
+    if v is None:
+        return default
+    try:
+        f = float(v)
+        return default if np.isnan(f) or np.isinf(f) else f
+    except (TypeError, ValueError):
+        return default
+
+
+def _fetch_yf_info(ticker: str) -> dict:
+    try:
+        return yf.Ticker(ticker).info or {}
+    except Exception:
+        return {}
+
+
+def fetch_fundamental_snapshot(ticker: str) -> dict:
+    """Fetches raw fundamental data for a single equity ticker."""
+    info = _fetch_yf_info(ticker)
+    return {"ticker": ticker, "info": info}
+
+
+def build_fundamental_snapshot_table(tickers: list) -> pd.DataFrame:
     """
-    Hybrid Fetcher for KRX: DART API + Naver Crawling.
-    Maps to yfinance-style dictionary for compatibility.
+    Fetches fundamentals for equity-only tickers.
+    ETF shelter assets are excluded before fetching.
+    Returns a flat DataFrame with one row per equity ticker.
     """
-    clean_ticker = str(ticker).replace('.KS', '').replace('.KQ', '')
-    
-    # 1. Naver Crawling (Operating Profit, Forward PER, Target Price)
-    url = f"https://finance.naver.com/item/main.naver?code={clean_ticker}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    info = {
-        'currentPrice': 0.0,
-        'targetMeanPrice': 0.0,
-        'forwardPE': 0.0,
-        'dividendYield': 0.0,
-        'marketCap': 0.0
-    }
-    
-    op_profit = 0.0
-    
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        html_io = io.StringIO(res.text)
-        
-        # Summary Tables
-        tables = pd.read_html(html_io, encoding='euc-kr')
-        
-        # Table 0 is usually the Corporate Performance Analysis
-        if len(tables) > 0:
-            df_main = tables[0]
-            if '영업이익' in df_main.iloc[:, 0].values:
-                op_row = df_main[df_main.iloc[:, 0] == '영업이익']
-                recent_op = op_row.iloc[0, 3] # Most recent fiscal year
-                if pd.notna(recent_op):
-                    op_profit = float(str(recent_op).replace(',', '')) * 100_000_000
+    equity_tickers = [t for t in tickers if t not in ETF_SHELTER_TICKERS]
+    rows = []
+    for ticker in equity_tickers:
+        info = _fetch_yf_info(ticker)
+        mc   = _safe(info, "marketCap")
+        ta   = _safe(info, "totalAssets")
+        ocf  = _safe(info, "operatingCashflow")
+        ni   = _safe(info, "netIncomeToCommon")
+        ebitda = _safe(info, "ebitda")
+        int_exp = abs(_safe(info, "interestExpense", 0.0))
+        capex   = abs(_safe(info, "capitalExpenditures", 0.0))
 
-        # Market Info (Current Price, Market Cap etc are usually in other tables or can be scraped)
-        # For brevity and robustness, we keep using some yf.info if available, 
-        # but the plan emphasizes reducing dependency.
-        
-        # Naver specific: Forward PER and Target Price are often in the right-side summary table
-        for t in tables:
-            if any(x in str(t.values) for x in ['추정PER', '목표주가']):
-                # Scrape logic for these specific fields if needed
-                pass
-
-    except Exception as e:
-        print(f"   -> [WARNING] Naver crawl failed for {clean_ticker}: {e}")
-
-    # 2. DART API (Equity, Net Income)
-    try:
-        dart = OpenDartReader(DART_API_KEY)
-        # Determine the most recent available business year
-        now = time.localtime()
-        # Annual reports (11011) for year Y are typically filed by late March of year Y+1.
-        # If we are in Jan-March, the most recent full year is Y-2.
-        # If we are in April-Dec, the most recent full year is Y-1.
-        bsns_year = now.tm_year - 1 if now.tm_mon >= 4 else now.tm_year - 2
-        
-        df_fin = dart.finstate(clean_ticker, bsns_year)
-        
-        # Fallback to previous year if the expected most recent year is not yet available
-        if df_fin is None or df_fin.empty:
-            df_fin = dart.finstate(clean_ticker, bsns_year - 1)
-        
-        net_income = 0.0
-        equity = 0.0
-        
-        if df_fin is not None and not df_fin.empty:
-            ni_row = df_fin[df_fin['account_nm'].str.contains('당기순이익', na=False)]
-            eq_row = df_fin[df_fin['account_nm'].str.contains('자본총계', na=False)]
-            
-            if not ni_row.empty:
-                net_income = float(ni_row.iloc[0]['thstrm_amount'].replace(',', ''))
-            if not eq_row.empty:
-                equity = float(eq_row.iloc[0]['thstrm_amount'].replace(',', ''))
-    except Exception as e:
-        print(f"   -> [WARNING] DART API failed for {clean_ticker}: {e}")
-        net_income = 0.0
-        equity = 0.0
-
-    # 3. Standardize to yf format
-    # We'll create minimal dataframes to satisfy score_custom_* functions
-    financials = pd.DataFrame(index=['Net Income', 'Operating Income', 'Total Revenue'], columns=['Current'])
-    financials.loc['Net Income', 'Current'] = net_income
-    financials.loc['Operating Income', 'Current'] = op_profit
-    
-    balancesheet = pd.DataFrame(index=['Stockholders Equity', 'Total Assets'], columns=['Current'])
-    balancesheet.loc['Stockholders Equity', 'Current'] = equity
-    
-    # Fallback to yf.info for missing bits like marketCap, currentPrice
-    try:
-        yf_stock = yf.Ticker(f"{clean_ticker}.KS")
-        yf_info = yf_stock.info
-        info.update({
-            'currentPrice': yf_info.get('currentPrice', 0),
-            'targetMeanPrice': yf_info.get('targetMeanPrice', 0),
-            'marketCap': yf_info.get('marketCap', 0),
-            'dividendYield': yf_info.get('dividendYield', 0),
-            'forwardPE': yf_info.get('forwardPE', 0)
+        rows.append({
+            "ticker":               ticker,
+            # Valuation
+            "earnings_yield":       _safe(info, "trailingEps") / _safe(info, "previousClose", np.nan),
+            "fcf_yield":            _safe(info, "freeCashflow") / mc,
+            "op_yield":             ocf / mc,
+            "book_to_price":        1.0 / _safe(info, "priceToBook", np.nan),
+            # Quality / profitability
+            "gross_profit_to_assets": _safe(info, "grossProfits") / ta,
+            "roe":                  _safe(info, "returnOnEquity"),
+            "roa":                  _safe(info, "returnOnAssets"),
+            "ocf_to_net_income":    ocf / ni,
+            "operating_margin":     _safe(info, "operatingMargins"),
+            # Balance sheet
+            "neg_debt_to_equity":   -_safe(info, "debtToEquity"),   # negated: lower D/E is better
+            "current_ratio":        _safe(info, "currentRatio"),
+            "interest_coverage":    ebitda / int_exp if int_exp > 0 else np.nan,
+            "cash_to_assets":       _safe(info, "totalCash") / ta,
+            # Capital discipline
+            "neg_capex_to_ocf":     -(capex / ocf) if ocf > 0 else np.nan,  # negated: lower capex burden is better
+            "neg_payout_ratio":     -_safe(info, "payoutRatio"),             # negated: lower payout = more retention
         })
-    except: pass
+        time.sleep(0.08)
 
-    return {
-        'info': info,
-        'financials': financials,
-        'balancesheet': balancesheet,
-        'cashflow': pd.DataFrame() # Dummy for now
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).set_index("ticker")
+
+
+# ── feature engineering ───────────────────────────────────────────────────────
+
+def compute_valuation_features(snapshot_df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["earnings_yield", "fcf_yield", "op_yield", "book_to_price"]
+    return snapshot_df[[c for c in cols if c in snapshot_df.columns]].copy()
+
+
+def compute_quality_features(snapshot_df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["gross_profit_to_assets", "roe", "roa", "ocf_to_net_income", "operating_margin"]
+    return snapshot_df[[c for c in cols if c in snapshot_df.columns]].copy()
+
+
+def compute_balance_sheet_features(snapshot_df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["neg_debt_to_equity", "current_ratio", "interest_coverage", "cash_to_assets"]
+    return snapshot_df[[c for c in cols if c in snapshot_df.columns]].copy()
+
+
+def compute_capital_discipline_features(snapshot_df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["neg_capex_to_ocf", "neg_payout_ratio"]
+    return snapshot_df[[c for c in cols if c in snapshot_df.columns]].copy()
+
+
+# ── normalization ─────────────────────────────────────────────────────────────
+
+def normalize_alpha_features(
+    feature_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Cross-sectional Z-score normalization.
+    Returns (normalized_df, data_quality_series).
+    data_quality_series ranges 0–1: 1.0 = fully observed, 0.0 = all missing.
+    """
+    n_cols   = feature_df.shape[1]
+    n_miss   = feature_df.isna().sum(axis=1)
+    quality  = 1.0 - (n_miss / max(n_cols, 1))
+
+    normed = feature_df.copy()
+    for col in normed.columns:
+        obs = normed[col].dropna()
+        if len(obs) < 3:
+            normed[col] = 0.0
+            continue
+        mu_c  = obs.mean()
+        std_c = obs.std()
+        if std_c < 1e-8:
+            normed[col] = 0.0
+        else:
+            normed[col] = (normed[col] - mu_c) / std_c
+
+    normed = normed.clip(-3.0, 3.0).fillna(0.0)
+    return normed, quality.rename("data_quality_score")
+
+
+# ── composite scoring ─────────────────────────────────────────────────────────
+
+def build_composite_score(
+    normed_df: pd.DataFrame,
+    alpha_weights: dict | None = None,
+) -> pd.Series:
+    """
+    Produces dimensionless cross-sectional composite Z-score z_i.
+    Equal-weight average within each family, then weighted across families.
+    """
+    if alpha_weights is None:
+        alpha_weights = ALPHA_WEIGHTS
+
+    families = {
+        "valuation":          ["earnings_yield", "fcf_yield", "op_yield", "book_to_price"],
+        "quality":            ["gross_profit_to_assets", "roe", "roa", "ocf_to_net_income", "operating_margin"],
+        "balance_sheet":      ["neg_debt_to_equity", "current_ratio", "interest_coverage", "cash_to_assets"],
+        "capital_discipline": ["neg_capex_to_ocf", "neg_payout_ratio"],
     }
 
-def get_fundamental_data(ticker):
-    """
-    Fetches all necessary fundamental data for a given ticker.
-    Routes to KR hybrid engine if ticker is Korean.
-    """
-    try:
-        if is_kr_ticker(ticker):
-            return get_kr_fundamental(ticker)
-        
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        financials = stock.financials
-        balancesheet = stock.balancesheet
-        cashflow = stock.cashflow
-        
-        return {
-            'info': info,
-            'financials': financials,
-            'balancesheet': balancesheet,
-            'cashflow': cashflow
-        }
-    except Exception as e:
-        print(f"   -> [WARNING] Error fetching fundamental data for {ticker}: {e}")
-        return None
-
-def score_custom_balance(data):
-    """
-    Custom Balance Scoring (16 points max -> 100 normalized)
-    """
-    if data is None or data['financials'].empty or data['balancesheet'].empty:
-        return 0.0
-    
-    info = data['info']
-    financials = data['financials']
-    balancesheet = data['balancesheet']
-    cashflow = data['cashflow']
-    
-    score = 0
-    try:
-        curr = financials.columns[0]
-        prev = financials.columns[1] if len(financials.columns) > 1 else None
-        
-        bs_curr = balancesheet.columns[0]
-        bs_prev = balancesheet.columns[1] if len(balancesheet.columns) > 1 else None
-        
-        cf_curr = cashflow.columns[0]
-        
-        # 1. Net Income > 0
-        if financials.loc['Net Income', curr] > 0: score += 1
-        
-        # 2. CFO > 0
-        cfo = cashflow.loc['Operating Cash Flow', cf_curr]
-        if cfo > 0: score += 1
-        
-        # 3. FCF > 0
-        fcf = info.get('freeCashflow', 0)
-        if fcf is None: fcf = 0
-        if fcf > 0: score += 1
-        
-        # 4. CFO > Net Income
-        if cfo > financials.loc['Net Income', curr]: score += 1
-        
-        # 5. ROA > 0
-        roa = info.get('returnOnAssets', 0)
-        if roa is not None and roa > 0: score += 1
-        
-        # 6. Debt/Equity < 1.5
-        de = info.get('debtToEquity', 0)
-        if de is not None and de < 150: score += 1 
-        
-        # 7. Current Ratio > 1.2
-        cr = info.get('currentRatio', 0)
-        if cr is not None and cr > 1.2: score += 1
-        
-        # 8. Long-Term Debt < Net Working Capital
-        nwc = balancesheet.loc['Current Assets', bs_curr] - balancesheet.loc['Current Liabilities', bs_curr]
-        ltd = balancesheet.get('Long Term Debt', pd.Series(0, index=balancesheet.columns)).get(bs_curr, 0)
-        if ltd < nwc: score += 1
-        
-        # 9. Interest Coverage > 3.0
-        ebit = financials.loc['EBIT', curr]
-        int_exp = abs(financials.get('Interest Expense', pd.Series(0, index=financials.columns)).get(curr, 0))
-        if int_exp > 0 and (ebit / int_exp) > 3.0: score += 1
-        elif int_exp == 0 and ebit > 0: score += 1
-        
-        if prev and bs_prev:
-            # 10. YoY Total Debt Decrease
-            curr_debt = balancesheet.get('Total Debt', pd.Series(0, index=balancesheet.columns)).get(bs_curr, 0)
-            prev_debt = balancesheet.get('Total Debt', pd.Series(0, index=balancesheet.columns)).get(bs_prev, 0)
-            if curr_debt < prev_debt: score += 1
-            
-            # 11. YoY Shares Outstanding Maintain/Decrease
-            # Use current shares as proxy if historical not available
-            score += 1 
-            
-            # 12. YoY Gross Margin Increase
-            curr_gm = financials.loc['Gross Profit', curr] / financials.loc['Total Revenue', curr]
-            prev_gm = financials.loc['Gross Profit', prev] / financials.loc['Total Revenue', prev]
-            if curr_gm > prev_gm: score += 1
-            
-            # 13. YoY Asset Turnover Increase
-            curr_at = financials.loc['Total Revenue', curr] / balancesheet.loc['Total Assets', bs_curr]
-            prev_at = financials.loc['Total Revenue', prev] / balancesheet.loc['Total Assets', bs_prev]
-            if curr_at > prev_at: score += 1
-            
-            # 14. YoY Inventory Turnover Increase
-            if 'Inventory' in balancesheet.index and 'Cost Of Revenue' in financials.index:
-                curr_it = abs(financials.loc['Cost Of Revenue', curr]) / balancesheet.loc['Inventory', bs_curr]
-                prev_it = abs(financials.loc['Cost Of Revenue', prev]) / balancesheet.loc['Inventory', bs_prev]
-                if curr_it > prev_it: score += 1
-            else: score += 1
-                
-            # 15. YoY ROIC Increase
-            def get_roic(f_date, b_date):
-                ni = financials.loc['Net Income', f_date]
-                debt = balancesheet.get('Total Debt', pd.Series(0, index=balancesheet.columns)).get(b_date, 0)
-                equity = balancesheet.loc['Stockholders Equity', b_date]
-                return ni / (debt + equity) if (debt + equity) != 0 else 0
-            if get_roic(curr, bs_curr) > get_roic(prev, bs_prev): score += 1
-        
-        # 16. CapEx < CFO
-        capex = abs(cashflow.get('Capital Expenditure', pd.Series(0, index=cashflow.columns)).get(cf_curr, 0))
-        if capex < cfo: score += 1
-        
-    except Exception: pass
-    return (score / 16.0) * 100.0
-
-def score_custom_growth(data):
-    """
-    Custom Growth Scoring (11 points max -> 100 normalized)
-    """
-    if data is None or data['financials'].empty:
-        return 0.0
-    
-    info = data['info']
-    financials = data['financials']
-    
-    score = 0
-    try:
-        curr = financials.columns[0]
-        prev = financials.columns[1] if len(financials.columns) > 1 else None
-        
-        # 1. Revenue YoY > 0
-        if prev and financials.loc['Total Revenue', curr] > financials.loc['Total Revenue', prev]: score += 1
-        # 2. Op Income YoY > 0
-        if prev and financials.loc['Operating Income', curr] > financials.loc['Operating Income', prev]: score += 1
-        # 3. EPS YoY > 0
-        if prev and financials.loc['Net Income', curr] > financials.loc['Net Income', prev]: score += 1
-        
-        # 4 & 5. 3Y CAGR > 5%
-        if len(financials.columns) >= 4:
-            oldest = financials.columns[3]
-            
-            # Revenue CAGR (Revenue is almost always positive)
-            rev_curr = financials.loc['Total Revenue', curr]
-            rev_old = financials.loc['Total Revenue', oldest]
-            if rev_curr > 0 and rev_old > 0:
-                rev_cagr = (rev_curr / rev_old)**(1/3) - 1
-                if rev_cagr > 0.05: score += 1
-            elif rev_curr > rev_old: # Fallback for edge cases
-                score += 1
-
-            # Net Income CAGR (Handle negative values)
-            ni_curr = financials.loc['Net Income', curr]
-            ni_old = financials.loc['Net Income', oldest]
-            
-            if ni_curr > 0 and ni_old > 0:
-                # Standard CAGR for positive growth
-                ni_cagr = (ni_curr / ni_old)**(1/3) - 1
-                if ni_cagr > 0.05: score += 1
-            elif ni_curr > ni_old:
-                # If it went from Loss -> Profit or Smaller Loss -> Larger Profit, it's growth
-                score += 1
-            
-        # 6. Fwd EPS > Trl EPS
-        fwd_eps = info.get('forwardEps')
-        trl_eps = info.get('trailingEps')
-        if fwd_eps and trl_eps and fwd_eps > trl_eps: score += 1
-        
-        # 7. upLast30days > downLast30days
-        # 8. upLast30days >= 3
-        up = info.get('earningsRevisionsUpLast30Days', 0)
-        down = info.get('earningsRevisionsDownLast30Days', 0)
-        if up is None: up = 0
-        if down is None: down = 0
-        if up > down: score += 1
-        if up >= 3: score += 1
-        
-        # 9. Target Price > Current Price * 1.10
-        cp = info.get('currentPrice')
-        tp = info.get('targetMeanPrice')
-        if cp and tp and tp > cp * 1.10: score += 1
-        
-        # 10. Rec Mean <= 2.5
-        rec = info.get('recommendationMean')
-        if rec and rec <= 2.5: score += 1
-        
-        # 11. YoY R&D Expense Increase
-        if 'Research And Development' in financials.index and prev:
-            if financials.loc['Research And Development', curr] > financials.loc['Research And Development', prev]: score += 1
-        
-    except Exception: pass
-    return (score / 11.0) * 100.0
-
-def generate_fundamental_views(tickers):
-    """
-    Computes 8 fundamental factors and returns a normalized score (0 to 1) per ticker.
-    Includes local caching to prevent API rate limiting.
-    """
-    FUNDAMENTAL_CACHE_FILE = os.path.join('data', 'cache', 'fundamental_cache.csv')
-    
-    # 1. Check Cache
-    if os.path.exists(FUNDAMENTAL_CACHE_FILE):
-        file_mtime = os.path.getmtime(FUNDAMENTAL_CACHE_FILE)
-        file_date = time.strftime('%Y-%m-%d', time.localtime(file_mtime))
-        today_date = time.strftime('%Y-%m-%d', time.localtime())
-        
-        if file_date == today_date:
-            print(f"✅ Loading fundamental views from cache ({file_date})...")
-            try:
-                cached_df = pd.read_csv(FUNDAMENTAL_CACHE_FILE, index_col=0)
-                cached_views = cached_df.iloc[:, 0] # Convert to Series
-                
-                # Match cached views with requested tickers
-                views = pd.Series(0.0, index=tickers)
-                for t in tickers:
-                    if t in cached_views.index:
-                        views[t] = cached_views.loc[t]
-                return views
-            except Exception as e:
-                print(f"⚠️ Cache read failed, re-computing: {e}")
-
-    print("🔍 Computing fresh fundamental views...")
-    views = pd.Series(0.0, index=tickers)
-    
-    # Internal module weights based on AGENTS.md relative proportions
-    FACTOR_WEIGHTS = {
-        "Custom_Balance": 0.1667,
-        "Custom_Growth": 0.1667,
-        "GrossIncome_Assets": 0.05,
-        "RnD_MarketCap": 0.05,
-        "RnD_Assets": 0.05,
-        "Innovative_ROE": 0.05,
-        "Price_Target": 0.05,
-        "Dividend_Yield": 0.05
-    }
-    
-    total_module_weight = sum(FACTOR_WEIGHTS.values())
-    
-    for ticker in tickers:
-        clean_ticker = str(ticker).split('.')[0]
-        if clean_ticker in DEFENSIVE_ETFS or clean_ticker in CORE_ETFS:
-            views[ticker] = 50.0 
+    z = pd.Series(0.0, index=normed_df.index)
+    for family, cols in families.items():
+        avail = [c for c in cols if c in normed_df.columns]
+        if not avail:
             continue
+        z += alpha_weights.get(family, 0.0) * normed_df[avail].mean(axis=1)
 
-        data = get_fundamental_data(ticker)
-        if data is None:
-            views[ticker] = 0.0
-            continue
-            
-        info = data['info']
-        financials = data['financials']
-        balancesheet = data['balancesheet']
-        
-        scores = {}
-        try:
-            scores["Custom_Balance"] = score_custom_balance(data)
-            scores["Custom_Growth"] = score_custom_growth(data)
-            
-            if not financials.empty and 'Gross Profit' in financials.index and not balancesheet.empty and 'Total Assets' in balancesheet.index:
-                gi_a = financials.loc['Gross Profit', financials.columns[0]] / balancesheet.loc['Total Assets', balancesheet.columns[0]]
-                scores["GrossIncome_Assets"] = min(100.0, max(0.0, gi_a * 100.0))
-            else: scores["GrossIncome_Assets"] = 0.0
-                
-            mc = info.get('marketCap', 0)
-            rnd = financials.loc['Research And Development', financials.columns[0]] if 'Research And Development' in financials.index else 0
-            
-            if mc and mc > 0: scores["RnD_MarketCap"] = min(100.0, (rnd / mc) * 1000.0)
-            else: scores["RnD_MarketCap"] = 0.0
-                
-            if rnd > 0 and not balancesheet.empty and 'Total Assets' in balancesheet.index:
-                rnd_a = rnd / balancesheet.loc['Total Assets', balancesheet.columns[0]]
-                scores["RnD_Assets"] = min(100.0, rnd_a * 500.0)
-            else: scores["RnD_Assets"] = 0.0
-                
-            if not financials.empty and 'Net Income' in financials.index and not balancesheet.empty and 'Stockholders Equity' in balancesheet.index:
-                ni = financials.loc['Net Income', financials.columns[0]]
-                equity = balancesheet.loc['Stockholders Equity', balancesheet.columns[0]]
-                if equity > 0:
-                    iroe = (ni + rnd) / equity
-                    scores["Innovative_ROE"] = min(100.0, max(0.0, iroe * 100.0))
-                else: scores["Innovative_ROE"] = 0.0
-            else:
-                roe = info.get('returnOnEquity', 0)
-                scores["Innovative_ROE"] = min(100.0, max(0.0, (roe if roe else 0) * 100.0))
-                
-            cp = info.get('currentPrice')
-            tp = info.get('targetMeanPrice')
-            if cp and tp and tp > 0:
-                # Eval 1: Direct comparison of cp/tp in same currency from yf info
-                ratio = cp / tp
-                scores["Price_Target"] = max(0.0, min(100.0, (1.5 - ratio) * 100.0))
-            else: scores["Price_Target"] = 50.0
-                
-            dy = info.get('dividendYield', 0)
-            scores["Dividend_Yield"] = min(100.0, (dy if dy else 0) * 1000.0)
-            
-        except Exception:
-            views[ticker] = 0.0
-            continue
-            
-        ticker_score = sum(scores[f] * FACTOR_WEIGHTS[f] for f in FACTOR_WEIGHTS) / total_module_weight
-        views[ticker] = ticker_score
-        
-    max_val = views.abs().max()
-    if max_val > 0: views = views / max_val
-    
-    # 2. Save to Cache
-    views.to_csv(FUNDAMENTAL_CACHE_FILE)
-    print(f"💾 Saved fundamental views to {FUNDAMENTAL_CACHE_FILE}")
-    
-    return views
+    std = z.std()
+    if std > 1e-8:
+        z = z / std
+    return z.rename("composite_z")
+
+
+# ── IC scaling ────────────────────────────────────────────────────────────────
+
+def scale_to_expected_return(
+    z: pd.Series,
+    sigma_spec: pd.Series,
+    ic: float = IC_INITIAL,
+) -> pd.Series:
+    """
+    Grinold-Kahn IC scaling: mu_i = IC * sigma_i * z_i.
+
+    Parameters
+    ----------
+    z          : dimensionless composite Z-score per equity asset
+    sigma_spec : annualized specific risk sqrt(D_ii) from the factor risk model
+    ic         : information coefficient (assumed IC_INITIAL until calibrated)
+
+    Returns
+    -------
+    mu : expected annualized excess return in decimal units
+    """
+    sigma_aligned = sigma_spec.reindex(z.index).fillna(sigma_spec.median() if not sigma_spec.empty else 0.15)
+    return (ic * sigma_aligned * z).rename("mu")
+
+
+# ── full pipeline ─────────────────────────────────────────────────────────────
+
+def build_expected_return_vector(
+    snapshot_df: pd.DataFrame,
+    sigma_spec_series: pd.Series,
+    alpha_weights: dict | None = None,
+    ic: float = IC_INITIAL,
+) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
+    """
+    Full pipeline: snapshot_df -> z_i -> mu_i.
+
+    Returns
+    -------
+    mu_series          : expected annualized excess return per equity ticker
+    composite_z_series : dimensionless composite Z-score
+    data_quality_df    : missingness-based data quality score per ticker
+    """
+    if snapshot_df.empty:
+        empty = pd.Series(dtype=float)
+        return empty, empty, pd.DataFrame()
+
+    combined = pd.concat([
+        compute_valuation_features(snapshot_df),
+        compute_quality_features(snapshot_df),
+        compute_balance_sheet_features(snapshot_df),
+        compute_capital_discipline_features(snapshot_df),
+    ], axis=1)
+
+    normed, data_quality = normalize_alpha_features(combined)
+    z  = build_composite_score(normed, alpha_weights)
+    mu = scale_to_expected_return(z, sigma_spec_series, ic)
+
+    return mu, z, data_quality.to_frame()

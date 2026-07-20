@@ -1,196 +1,208 @@
 # -*- coding: utf-8 -*-
+"""
+data/loader.py
+==============
+Market data loading and candidate frame construction.
+
+Design rules:
+- No trend-based eligibility filters
+- No hard KR/US quota split
+- ETF shelter assets pass eligibility automatically
+- Currency tags flow from universe metadata, not post-hoc FX heuristics
+"""
+
 import time
-import pandas as pd
-import numpy as np
-import yfinance as yf
-import urllib.request
-import re
-import FinanceDataReader as fdr
 import unicodedata
-from config import CSV_ENCODING, TICKER_NORM, CORE_ETFS, DEFENSIVE_ETFS
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from config import (
+    DATA_DIR, CSV_ENCODING, TICKER_NORM, PRICE_START, PRICE_END,
+    ETF_SHELTER_TICKERS, MAX_PARTICIPATION_RATE, COVARIANCE_WINDOW,
+)
 
-def is_kr_ticker(ticker):
-    """
-    KOSPI tickers always start with digits
-    """
-    return str(ticker)[0].isdigit()
 
-def normalize_ticker_name(name):
-    """Applies NFC normalization to ensure Korean strings match across OS platforms."""
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def normalize_ticker_name(name: str) -> str:
     return unicodedata.normalize(TICKER_NORM, name) if isinstance(name, str) else name
 
-def save_to_cache(df, filename):
-    """Saves price data using utf-8-sig to preserve Hangul."""
-    df.to_csv(filename, encoding=CSV_ENCODING)
 
-def load_from_cache(filename):
-    """Loads price data and ensures ticker names are normalized."""
-    df = pd.read_csv(filename, index_col=0, parse_dates=True, encoding=CSV_ENCODING)
-    df.columns = [normalize_ticker_name(col) for col in df.columns]
-    return df
+def load_from_cache(name: str) -> pd.DataFrame | None:
+    path = DATA_DIR / f"{name}"
+    if path.exists():
+        df = pd.read_csv(path, index_col=0, parse_dates=True, encoding=CSV_ENCODING)
+        df.columns = [normalize_ticker_name(c) for c in df.columns]
+        return df
+    return None
 
-def fetch_data_in_chunks(ticker_list, start_date, end_date, chunk_size=50):
-    kr_tickers = [t for t in ticker_list if is_kr_ticker(t)]
-    us_tickers = [t for t in ticker_list if not is_kr_ticker(t)]
 
-    all_prices = []
-    all_volumes = []
+def save_to_cache(df: pd.DataFrame, name: str) -> None:
+    path = DATA_DIR / f"{name}"
+    df.to_csv(path, encoding=CSV_ENCODING)
 
-    print(f"🇰🇷 Fetching {len(kr_tickers)} KRX assets via yfinance (Chunks of {chunk_size})...")
-    
-    kr_mapping = {}
-    kr_yf_tickers = []
 
-    for t in kr_tickers:
-        clean_code = t.split('-')[0]
-        yf_code = f"{clean_code}.KS"
-        kr_mapping[yf_code] = clean_code
-        kr_yf_tickers.append(yf_code)
+# ── data fetching ─────────────────────────────────────────────────────────────
 
-    for i in range(0, len(kr_yf_tickers), chunk_size):
-        chunk = kr_yf_tickers[i:i + chunk_size]
-        try:
-            data = yf.download(chunk, start=start_date, end=end_date, auto_adjust=True, progress=False)
-            if not data.empty:
-                price_df = data['Close']
-                vol_df = data['Volume']
-                
-                if isinstance(price_df, pd.Series):
-                    price_df = price_df.to_frame(name=chunk[0])
-                    vol_df = vol_df.to_frame(name=chunk[0])
-                
-                price_df = price_df.rename(columns=kr_mapping)
-                vol_df = vol_df.rename(columns=kr_mapping)
-                
-                all_prices.append(price_df)
-                all_volumes.append(vol_df)
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"⚠️ KR Chunk starting {chunk[0]} failed: {e}")
-
-    print(f"🇺🇸 Fetching {len(us_tickers)} US assets via yfinance (Chunks of {chunk_size})...")
-    for i in range(0, len(us_tickers), chunk_size):
-        chunk = us_tickers[i:i + chunk_size]
-        try:
-            data = yf.download(chunk, start=start_date, end=end_date, auto_adjust=True, progress=False)
-            if not data.empty:
-                all_prices.append(data['Close'])
-                all_volumes.append(data['Volume'])
-            time.sleep(1.5)
-        except Exception as e:
-            print(f"⚠️ US Chunk starting {chunk[0]} failed: {e}")
-
-    full_prices = pd.concat(all_prices, axis=1)
-    full_volumes = pd.concat(all_volumes, axis=1)
-    
-    full_prices = full_prices.loc[:, ~full_prices.columns.duplicated()].sort_index()
-    full_volumes = full_volumes.loc[:, ~full_volumes.columns.duplicated()].sort_index()
-
-    return full_prices, full_volumes
-
-def get_naver_pbr(ticker):
+def fetch_data_in_chunks(
+    tickers: list,
+    start_date: str = PRICE_START,
+    end_date: str | None = PRICE_END,
+    chunk_size: int = 50,
+) -> dict[str, pd.DataFrame]:
     """
-    Get PBR data of korean stocks from NAVER
+    Downloads Close and Volume in chunks of chunk_size.
+    Returns dict {"close": pd.DataFrame, "volume": pd.DataFrame}.
+    KR tickers (digit-starting) are normalised to .KS suffix before download.
     """
-    clean_ticker = "".join([c for c in str(ticker) if c.isdigit()])
-    clean_ticker = clean_ticker.zfill(6)
+    close_parts, volume_parts = [], []
 
-    url = f"https://finance.naver.com/item/main.naver?code={clean_ticker}"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    
+    def _yf_ticker(t: str) -> str:
+        if t[0].isdigit():
+            code = t.split(".")[0].zfill(6)
+            return f"{code}.KS"
+        return t
+
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i : i + chunk_size]
+        yf_chunk = [_yf_ticker(t) for t in chunk]
+        try:
+            raw = yf.download(
+                yf_chunk, start=start_date, end=end_date,
+                auto_adjust=True, progress=False, threads=True,
+            )
+            if raw.empty:
+                continue
+            if isinstance(raw.columns, pd.MultiIndex):
+                c = raw["Close"] if "Close" in raw else pd.DataFrame()
+                v = raw["Volume"] if "Volume" in raw else pd.DataFrame()
+            else:
+                c = raw[["Close"]] if "Close" in raw else pd.DataFrame()
+                v = raw[["Volume"]] if "Volume" in raw else pd.DataFrame()
+            close_parts.append(c)
+            volume_parts.append(v)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+    close_df  = pd.concat(close_parts, axis=1).sort_index() if close_parts else pd.DataFrame()
+    volume_df = pd.concat(volume_parts, axis=1).sort_index() if volume_parts else pd.DataFrame()
+    close_df  = close_df.loc[:, ~close_df.columns.duplicated()]
+    volume_df = volume_df.loc[:, ~volume_df.columns.duplicated()]
+    return {"close": close_df, "volume": volume_df}
+
+
+def apply_currency_conversion(
+    close_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Converts USD-denominated prices to KRW for unified portfolio accounting.
+    Currency assignment comes from metadata_df, not ticker-name heuristics.
+    Returns (converted_df, fx_series).
+    """
     try:
-        with urllib.request.urlopen(req, timeout=3) as response:
-            html = response.read().decode('euc-kr', errors='ignore')
-            
-            match = re.search(r'id="_pbr">([\d\.]+)</em>', html)
-            if match:
-                return float(match.group(1))
-            
-            match_b = re.search(r'PBR.*?<em>([\d\.]+)</em>', html, re.DOTALL)
-            if match_b:
-                return float(match_b.group(1))
-    except Exception as e:
-        print(f"⚠️ Naver PBR scrape failed for {ticker}: {e}")
-        
-    return np.nan
+        fx_raw = yf.download(
+            "USDKRW=X",
+            start=str(close_df.index[0].date()),
+            end=str(close_df.index[-1].date()),
+            auto_adjust=True, progress=False,
+        )
+        fx = fx_raw["Close"].reindex(close_df.index).ffill().bfill()
+        if isinstance(fx, pd.DataFrame):
+            fx = fx.iloc[:, 0]
+    except Exception:
+        fx = pd.Series(1300.0, index=close_df.index)
 
-def fetch_pbr_data(ticker_list):
-    """Get the latest PBR data"""
-    print("🔍 Fetching PBR data for candidates...")
-    pbr_map = {}
-    
-    kr_tickers = [t for t in ticker_list if is_kr_ticker(t)]
-    us_tickers = [t for t in ticker_list if not is_kr_ticker(t)]
+    converted = close_df.copy()
+    for ticker in close_df.columns:
+        currency = "USD"
+        if ticker in metadata_df.index:
+            currency = metadata_df.loc[ticker, "trading_currency"]
+        if currency == "USD":
+            converted[ticker] = close_df[ticker] * fx
+    return converted, fx
 
-    for t in kr_tickers:
-        pbr = get_naver_pbr(t)
-        pbr_map[t] = pbr
 
-    for t in us_tickers:
-        try:
-            ticker_obj = yf.Ticker(t)
-            pbr = ticker_obj.info.get('priceToBook', np.nan)
-            pbr_map[t] = pbr
-        except Exception as e:
-            pbr_map[t] = np.nan
-    
-    return pd.Series(pbr_map)
+# ── candidate frame construction ──────────────────────────────────────────────
 
-def filter_candidates(price_df, volume_df, top_n=200):
+def compute_adv(
+    volume_df: pd.DataFrame,
+    close_df: pd.DataFrame,
+    window: int = 20,
+) -> pd.Series:
+    """Average daily traded value (price × volume) over rolling window."""
+    aligned = close_df.reindex(volume_df.index).ffill()
+    return (volume_df * aligned).tail(window).mean()
+
+
+def compute_liquidity_caps(
+    candidate_df: pd.DataFrame,
+    nav: float,
+    kappa: float = MAX_PARTICIPATION_RATE,
+) -> pd.Series:
     """
-    Filters the most active and trending candidates using only fast Pandas operations
-    (Historical Price & Volume) without heavy API calls like yfinance or DART.
+    Per-asset weight cap = kappa * ADV / NAV.
+    ETF shelter assets always receive cap = 1.0 (not liquidity-constrained).
     """
-    filled_prices = price_df.ffill()
+    caps = (kappa * candidate_df["adv"] / max(nav, 1.0)).clip(upper=1.0)
+    for ticker in candidate_df.index:
+        if candidate_df.loc[ticker, "is_etf_shelter"]:
+            caps[ticker] = 1.0
+    return caps
 
-    recent_prices = price_df.tail(20).mean()
-    recent_volumes = volume_df.tail(20).mean()
-    price_volume = recent_prices * recent_volumes
 
-    valid_price_volume = price_volume.dropna()
-    valid_price_volume = valid_price_volume[valid_price_volume > 0]
-
-    current_prices = filled_prices.iloc[-1]
-    ma_200 = price_df.tail(200).mean()
-    
-    alive_trend = current_prices > (ma_200 * 0.8) 
-    valid_tickers = [t for t in valid_price_volume.index if alive_trend.get(t, False)]
-    valid_series = valid_price_volume.loc[valid_tickers]
-
-    kr_tickers = [t for t in valid_series.index if is_kr_ticker(t)]
-    us_tickers = [t for t in valid_series.index if not is_kr_ticker(t)]
-
-    kr_top = valid_series.loc[kr_tickers].nlargest(top_n // 2).index.tolist()
-    us_top = valid_series.loc[us_tickers].nlargest(top_n // 2).index.tolist()
-
-    final_candidates = kr_top + us_top
-    must_have = set(CORE_ETFS + DEFENSIVE_ETFS)
-    final_list = list(set(final_candidates) | must_have)
-    final_list = [t for t in final_list if t in price_df.columns]
-
-    kr_count = sum(1 for t in final_list if is_kr_ticker(t))
-    us_count = len(final_list) - kr_count
-
-    print(f"✅ Selected {len(final_list)}: KR({kr_count}), US({us_count})"
-          f"(Including {len(CORE_ETFS)} Core ETFs and {len(DEFENSIVE_ETFS)} Defensive ETFs!)")
-
-    return final_list
-
-def apply_currency_conversion(price_df):
+def apply_basic_eligibility(candidate_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Identifies US tickers and converts their prices to KRW.
-    Ensures that volatility and drawdowns include the FX impact.
+    Keeps assets that either:
+      (a) are ETF shelter assets (always pass), or
+      (b) have sufficient price history and positive ADV.
+
+    No trend-based filters. No country-quota splits.
     """
-    start_date = price_df.index.min()
-    end_date = price_df.index.max()
-    
-    fx_data = yf.download("USDKRW=X", start=start_date, end=end_date, auto_adjust=True)['Close'].squeeze()
-    
-    fx_data = fx_data.reindex(price_df.index).ffill().bfill()
-    
-    converted_df = price_df.copy()
-    for ticker in converted_df.columns:
-        if not str(ticker)[0].isdigit():
-            converted_df[ticker] = converted_df[ticker] * fx_data
-            
-    return converted_df, fx_data
+    shelter = candidate_df["is_etf_shelter"] == True
+    has_history = candidate_df["n_obs"] >= COVARIANCE_WINDOW
+    has_volume  = candidate_df["adv"] > 0
+    return candidate_df[shelter | (has_history & has_volume)].copy()
+
+
+def build_candidate_frame(
+    close_df: pd.DataFrame,
+    volume_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Constructs the candidate DataFrame consumed by all downstream modules.
+
+    Output columns:
+        n_obs, adv, is_etf_shelter, country, trading_currency,
+        instrument_type, sector, sleeve, is_defensive, is_safe_haven
+    """
+    adv   = compute_adv(volume_df, close_df)
+    n_obs = close_df.notna().sum()
+
+    rows = []
+    for ticker in close_df.columns:
+        if ticker in metadata_df.index:
+            meta = metadata_df.loc[ticker]
+            get = lambda k, d: meta[k] if k in meta.index else d
+        else:
+            meta = None
+            get = lambda k, d: d
+
+        rows.append({
+            "ticker":           ticker,
+            "n_obs":            int(n_obs.get(ticker, 0)),
+            "adv":              float(adv.get(ticker, 0.0)),
+            "is_etf_shelter":   bool(get("is_etf_shelter", False)),
+            "country":          get("country", "US"),
+            "trading_currency": get("trading_currency", "USD"),
+            "instrument_type":  get("instrument_type", "equity"),
+            "sector":           get("sector", "Unknown"),
+            "sleeve":           get("sleeve", "global_equity"),
+            "is_defensive":     bool(get("is_defensive", False)),
+            "is_safe_haven":    bool(get("is_safe_haven", False)),
+        })
+
+    df = pd.DataFrame(rows).set_index("ticker")
+    return apply_basic_eligibility(df)

@@ -3,7 +3,9 @@
 config.py
 =========
 Single source of truth for all constants, thresholds, and universe definitions.
-Every other module imports from here — never hardcode values elsewhere.
+
+Architecture: IC-scaled fundamental alpha + orthogonalized factor risk model +
+              constrained QP optimizer + ETF shelter sleeve floors + CVaR/CDaR overlay.
 """
 
 import os
@@ -12,181 +14,199 @@ from pathlib import Path
 # ============================================================
 # DATA PIPELINE
 # ============================================================
-USE_CACHE_DATA = False
-DART_API_KEY = "013401953d0a2a176ebd48d36f204a73b7033107"
+USE_CACHE_DATA = True
+DART_API_KEY   = "013401953d0a2a176ebd48d36f204a73b7033107"
 
 # ============================================================
 # PATHS
 # ============================================================
-BASE_DIR   = Path(__file__).resolve().parent
-DATA_DIR   = BASE_DIR / "data" / "cache"        # cached price CSVs
-OUTPUT_DIR = BASE_DIR / "outputs"
-LOG_DIR    = BASE_DIR / "logs"
+BASE_DIR     = Path(__file__).resolve().parent
+DATA_DIR     = BASE_DIR / "data" / "cache"
+OUTPUT_DIR   = BASE_DIR / "outputs"
+SNAPSHOT_DIR = BASE_DIR / "outputs" / "snapshots"
+LOG_DIR      = BASE_DIR / "logs"
 
-for _dir in [DATA_DIR, OUTPUT_DIR]:
+for _dir in [DATA_DIR, OUTPUT_DIR, SNAPSHOT_DIR]:
     _dir.mkdir(parents=True, exist_ok=True)
 
-
 # ============================================================
-# ENCODING (Phase 2 — Korean Data Protocol)
+# ENCODING
 # ============================================================
-CSV_ENCODING   = "utf-8-sig"     # preserves BOM for Hangul on Windows / macOS
-TICKER_NORM    = "NFC"           # unicodedata.normalize form for KRX ticker matching
-
+CSV_ENCODING = "utf-8-sig"
+TICKER_NORM  = "NFC"
 
 # ============================================================
 # DATA WINDOW
 # ============================================================
-PRICE_START    = "2006-01-01"    # enough history for 2008 crisis backtest
-PRICE_END      = None            # None → fetch up to today
+PRICE_START = "2006-01-01"
+PRICE_END   = None
 
 # ============================================================
-# CORE MACRO ETFs (Phase 0 — 생존용 근본 방어막)
+# ALPHA MODEL
 # ============================================================
-CORE_ETFS = [
-    # 미국 매크로/섹터 방어막 (2008년 이전 상장 위주)
-    "SPY",   # S&P 500 (시장 베타)
-    "DBC",   # 원자재 (공급 충격 방어)
-    "VNQ",   # 미국 리츠/부동산
-    "XLK",   # 기술주 섹터
-    "XLE",   # 에너지 섹터 (MIDEAST 시나리오 하드캐리)
-    "XLV",   # 헬스케어 (방어주)
-    
-    # 한국 매크로 방어막 (그나마 역사 긴 놈들)
-    "069500", # KODEX 200 (한국 시장 베타, 2002년 상장)
-    "139260", # TIGER 200 IT (한국 반도체/IT 베타)
-]
+# IC = cross-sectional Pearson correlation of z_i with realized forward returns.
+# IC_INITIAL is an assumed value (not calibrated). Update by cross-validation
+# as decision snapshots accumulate in SNAPSHOT_DIR.
+IC_INITIAL = 0.04
 
-DEFENSIVE_ETFS = [
-    # 미국 찐 방어막
-    "TLT",   # 미국 장기 국채
-    "IEF",   # 미국 중기 국채
-    "SHV",   # 미국 단기채 (초안전)
-    "SGOV",  # 달러 현금성
-    "GLD",   # 금
-    # 한국 찐 방어막
-    "114260", # KODEX 국고채3년
-    "148070", # KOEF 국고채10년 (혹시 몰라 추가)
-    "456880", # ACE SOFR ETF (달러 파킹)
-]
-
-# ============================================================
-# SIGNAL PARAMETERS (Phase 1-A — Trend)
-# ============================================================
-MA_PERIODS     = [5, 22, 60, 182]    # short → long moving average windows
-ENVELOPE_PERIOD = 22                  # central MA for the envelope
-ENVELOPE_BAND   = 0.20                # ±10 % bands around the 22-day MA
-
-# Minimum alignment score to generate a BL view (0.0 – 1.0)
-# Signals below this gate are excluded from the Omega matrix entirely
-MIN_SIGNAL_STRENGTH = 0.25            # i.e., at least 1 of 4 MA conditions met
-
-
-# ============================================================
-# MACRO RISK FILTERS (Phase 1-B — McGee TAA)
-# ============================================================
-VIX_KILLSWITCH     = 30.0     # if VIX ≥ this, reduce equity beta
-VIX_CONFIDENCE_BASE = 20.0    # VIX level at which the Omega scalar = 1.0
-                               # above this, confidence linearly decays:
-                               # scalar = 1 + max(0, (VIX - 20) / 20)
-FX_KILLSWITCH_LIMIT = 0.05     # if fx_volatility ≥ this, move all assets to dollar
-
-TIPS_TICKER         = "TIP"   # iShares TIPS Bond ETF as real-rate proxy
-SOFR_SAFE_HAVEN     = "SGOV"  # rotate here during VIX kill-switch (US equiv)
-                               # KRX equivalent: "ACE SOFR ETF" (229200.KS)
-
-Q_WEIGHTS           = {
-                        'trend': 0.2,
-                        'fundamental': 0.4,
-                        'alpha': 0.2,
-                        'skew': 0.2
-                      }
-
-
-# ============================================================
-# ASSET UNIVERSE (Phase 3 — Multi-Asset Barbell Strategy)
-# ============================================================
-# Segment mapping for HRP risk-block clustering
-SEGMENT_MAP = {
-    # KRX
-    "012450.KS": "Defense",
-    "079550.KS": "Defense",
-    "329180.KS": "Energy",
-    "010130.KS": "SafeHaven",
-    "005930.KS": "Core",
-    "148070.KS": "Bond",
-    "229200.KS": "Cash",
-    
-    # US
-    "MSFT":      "Quality",
-    "AAPL":      "Quality",
-    "OXY":       "Energy",
-    "ADM":       "Agri",
-    "CTVA":      "Agri",
-    "GLD":       "SafeHaven",
-    "DBC":       "Commodity",
-    "NEM":       "SafeHaven",
-    "GOLD":      "SafeHaven",
-    "JNJ":       "Core",
-    "PG":        "Core",
-    "TLT":       "Bond",
-    "IEF":       "Bond",
-    "SGOV":      "Cash",
+ALPHA_WEIGHTS = {
+    "valuation":          0.35,
+    "quality":            0.25,
+    "balance_sheet":      0.25,
+    "capital_discipline": 0.15,
 }
 
+# ============================================================
+# RISK MODEL
+# ============================================================
+COVARIANCE_WINDOW     = 252    # trading days
+EWMA_HALFLIFE         = 63     # days (one quarter)
+LEDOIT_WOLF_SHRINKAGE = True
+SPECIFIC_RISK_FLOOR   = 1e-4   # minimum D_ii
+
+# Gram-Schmidt orthogonalization order for factor exposure matrix B.
+# Higher-priority groups are projected out of lower-priority columns.
+FACTOR_PRIORITY = ["sleeve", "country", "sector", "currency"]
 
 # ============================================================
-# OPTIMIZATION PARAMETERS (Phase 2)
+# OPTIMIZER
 # ============================================================
-
-# HRP
-HRP_LINKAGE_METHOD  = "ward"          # scipy linkage method for dendrogram
-HRP_DISTANCE_METRIC = "pearson"       # correlation → distance conversion
-
-# Black-Litterman
-BL_RISK_AVERSION    = 2.5             # δ (delta): market risk-aversion coefficient
-BL_TAU              = 0.05            # τ (tau): scales uncertainty of prior
-                                       # rule-of-thumb: 1/T where T = sample length
-RM_METHOD           = "CDaR"          # In Riskfolio, 'Sharpe' + 'rm' maximizes the Ulcer Performance Index
-
-# CDaR / UPI
-CDAR_ALPHA          = 0.05            # CVaR / CDaR confidence level
-CDAR_LIMIT          = 0.30            # hard constraint: CDaR ≤ CDAR_LIMIT %
-RISK_FREE_RATE      = 0.04            # annualized (used in UPI & Calmar)
-
+# lambda_r: CARA risk aversion. Interpretable as standard MV utility coefficient
+# only after IC scaling makes mu dimensionally consistent (annualized decimal return units).
+OPTIMIZER_RISK_AVERSION = 3.0
+OPTIMIZER_HOLDING_REG   = 0.25   # lambda_h: holdings-stability regularizer
+UNCERTAINTY_PENALTY     = 0.50   # gamma_u
+LIQUIDITY_PENALTY       = 0.25   # gamma_l
 
 # ============================================================
-# PORTFOLIO CONSTRAINTS (Phase 5)
+# PORTFOLIO CONSTRAINTS
 # ============================================================
-MAX_ASSETS          = 10              # final portfolio: top-N by weight
-MIN_WEIGHT          = 0.01            # floor: 1 % per asset
-MAX_WEIGHT_SINGLE   = 0.30            # ceiling: 30 % per asset
-LIQUIDITY_WINDOW    = 20              # days for avg-volume weight cap
+MAX_WEIGHT_SINGLE   = 0.10
+MAX_WEIGHT_SECTOR   = 0.25
+MAX_WEIGHT_COUNTRY  = 0.60
+MAX_ASSETS          = 20
+MIN_WEIGHT          = 0.01
 
+MIN_WEIGHT_USD      = 0.30
+MAX_WEIGHT_USD      = 0.70
+MIN_WEIGHT_KRW      = 0.30
+MAX_WEIGHT_KRW      = 0.70
+
+MIN_WEIGHT_CASH              = 0.05
+MIN_WEIGHT_BOND_CASH_STRESS  = 0.15
+
+MAX_PARTICIPATION_RATE = 0.10   # kappa
 
 # ============================================================
-# FAMA-FRENCH (Phase 5 — Factor Loading)
+# CVaR / CDaR  (loss convention throughout: positive = worse)
+# CVaR_alpha(w) <= L_cvar
+# CDaR_alpha(w) <= L_cdar
+# This is consistent with Riskfolio-Lib's interface.
 # ============================================================
-FF_FACTORS          = 5               # 5-factor model (Mkt, SMB, HML, RMW, CMA)
-FF_REGRESSION_WINDOW = 252            # rolling window in trading days (1 year)
-FF_LIBRARY          = "F-F_Research_Data_5_Factors_2x3_daily"  # pandas_datareader key
-
+CVAR_ALPHA   = 0.05
+CDAR_ALPHA   = 0.05
+CVAR_LIMIT   = 0.20   # L_cvar: maximum expected tail loss (fraction)
+CDAR_LIMIT   = 0.30   # L_cdar: maximum conditional drawdown (fraction)
+RISK_FREE_RATE = 0.04
 
 # ============================================================
-# BACKTEST SCENARIOS (Phase 6)
+# STRESS REGIME THRESHOLDS
+# ============================================================
+VIX_NORMAL_UPPER   = 20.0
+VIX_ELEVATED_UPPER = 30.0
+FX_VOL_STRESS      = 0.05
+
+# ============================================================
+# ETF SHELTER ARCHITECTURE
+# ============================================================
+ETF_SHELTER_TICKERS = [
+    "TLT", "IEF", "SGOV", "GLD", "DBC",
+    "114260.KS", "148070.KS", "456880.KS",
+    "069500.KS", "139260.KS",
+]
+
+# Base sleeve bounds. Floors are tightened by macro risk governor under stress.
+SLEEVE_DEFINITIONS = {
+    "global_equity":        {"min": 0.20, "max": 0.80},
+    "safe_haven_bond":      {"min": 0.05, "max": 0.40},
+    "cash":                 {"min": 0.05, "max": 0.30},
+    "safe_haven_commodity": {"min": 0.00, "max": 0.15},
+    "commodity":            {"min": 0.00, "max": 0.15},
+    "equity_index":         {"min": 0.00, "max": 0.20},
+}
+
+# Delta applied to sleeve floors by the macro risk governor under stress.
+SLEEVE_STRESS_DELTA = {
+    "elevated": {"safe_haven_bond": 0.05, "cash": 0.05},
+    "stress":   {"safe_haven_bond": 0.10, "cash": 0.10, "safe_haven_commodity": 0.05},
+    "fx_stress":{"cash": 0.05},
+}
+
+# ============================================================
+# BACKTEST (historical price-mechanics replay only)
+# Full structural alpha replay is not yet valid — requires historical
+# fundamental snapshots stored in SNAPSHOT_DIR.
 # ============================================================
 BACKTEST_SCENARIOS = {
     "GFC_2008":    ("2007-07-01", "2009-06-30"),
     "COVID_2020":  ("2019-10-01", "2021-03-31"),
-    "MIDEAST_2026":("2025-10-01", None),           # None → use today
+    "MIDEAST_2026":("2025-10-01", None),
+}
+BACKTEST_INITIAL_CAPITAL = 1_000_000
+BACKTEST_COMMISSION      = 0.001
+BACKTEST_ENABLE          = True
+
+# ============================================================
+# EVALUATION
+# ============================================================
+ULCER_WINDOW  = 14
+CALMAR_WINDOW = 36
+
+# ============================================================
+# COUNTRY / SECTOR BOUNDS (used by constraints builder)
+# ============================================================
+COUNTRY_BOUNDS = {
+    "US":  {"min": 0.10, "max": 0.70},
+    "KR":  {"min": 0.10, "max": 0.70},
 }
 
-BACKTEST_INITIAL_CAPITAL = 1_000_000   # USD / KRW handled per asset in engine.py
-BACKTEST_COMMISSION      = 0.001       # 0.1 % per trade
-BACKTEST_ENABLE = True
+SECTOR_BOUNDS = {
+    "Technology":        {"min": 0.00, "max": 0.25},
+    "Financials":        {"min": 0.00, "max": 0.25},
+    "Healthcare":        {"min": 0.00, "max": 0.25},
+    "Consumer Cyclical": {"min": 0.00, "max": 0.20},
+    "Industrials":       {"min": 0.00, "max": 0.20},
+    "Energy":            {"min": 0.00, "max": 0.15},
+    "Materials":         {"min": 0.00, "max": 0.15},
+    "Communication Services": {"min": 0.00, "max": 0.20},
+}
 
 # ============================================================
-# EVALUATION METRICS (Phase 7)
+# ADDITIONAL CONSTRAINT PARAMETERS
 # ============================================================
-ULCER_WINDOW        = 14              # rolling window for Ulcer Index
-CALMAR_WINDOW       = 36              # months for Calmar Ratio calculation
+MIN_WEIGHT_SINGLE = 0.00   # per-asset lower bound (long-only: 0.0)
+LIQUIDITY_WINDOW  = 20     # trading days for short-term ADV calculation
+
+# ============================================================
+# HRP FALLBACK / BENCHMARK PARAMETERS
+# ============================================================
+HRP_LINKAGE_METHOD   = "ward"
+HRP_DISTANCE_METRIC  = "pearson"
+
+# ============================================================
+# OPTIONAL BL FLAG
+# ============================================================
+ENABLE_BLACK_LITTERMAN = False
+
+# ============================================================
+# LEGACY — kept for backwards compat with any remaining imports.
+# These are NOT used in the production pipeline.
+# ============================================================
+CORE_ETFS = [
+    "SPY", "DBC", "VNQ", "XLK", "XLE", "XLV",
+    "069500.KS", "139260.KS",
+]
+DEFENSIVE_ETFS = [
+    "TLT", "IEF", "SHV", "SGOV", "GLD",
+    "114260.KS", "148070.KS", "456880.KS",
+]

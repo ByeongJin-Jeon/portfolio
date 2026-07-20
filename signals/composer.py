@@ -1,131 +1,137 @@
-import pandas as pd
+# -*- coding: utf-8 -*-
+"""
+signals/composer.py
+===================
+Pipeline assembler for the institutional alpha architecture.
+
+Assembles:
+  mu (IC-scaled fundamental alpha, equity only)
+  u  (options-implied uncertainty penalty)
+  l  (liquidity penalty)
+  -> mu_tilde = mu - gamma_u * u - gamma_l * l
+
+Also calls the macro risk governor to produce constraint multipliers.
+No BL view composition. No trend signals. No defensive overrides.
+"""
+
 import numpy as np
-import yfinance as yf
-from signals.trend import generate_trend_views
-from signals.fundamental import generate_fundamental_views
-from signals.options_skew import generate_options_skew_views
-from signals.macro import get_macro_expected_returns, get_macro_signals, apply_macro_filters
-from portfolio.factor_loading import fetch_ff_factors, extract_idiosyncratic_alpha
-from config import Q_WEIGHTS, VIX_KILLSWITCH, FX_KILLSWITCH_LIMIT, DEFENSIVE_ETFS
+import pandas as pd
+from config import (
+    UNCERTAINTY_PENALTY, LIQUIDITY_PENALTY,
+    SLEEVE_DEFINITIONS, MIN_WEIGHT_USD, MAX_WEIGHT_USD,
+    MIN_WEIGHT_KRW, MAX_WEIGHT_KRW,
+)
+from signals.fundamental import build_expected_return_vector
+from signals.options_skew import build_uncertainty_penalty_vector
+from signals.macro import get_macro_state, build_constraint_multipliers, apply_macro_constraint_adjustments
 
-def compose_bl_inputs(prices, volumes=None):
+
+def build_liquidity_penalty_vector(
+    candidate_df: pd.DataFrame,
+    nav: float,
+    gamma_l: float = LIQUIDITY_PENALTY,
+) -> pd.Series:
     """
-    Orchestrates Tactical Signals with the new 13-factor model.
-    """    
-    print("📡 Orchestrating Tactical Signals with 13-Factor Model...")
+    Liquidity penalty l_i in annualized return units.
+    Assets with low ADV relative to NAV receive a higher penalty.
+    ETF shelter assets receive l_i = 0 (no liquidity friction assumed).
+    """
+    max_adv = candidate_df["adv"].replace(0, np.nan).max()
+    if not np.isfinite(max_adv) or max_adv <= 0:
+        return pd.Series(0.0, index=candidate_df.index, name="l_penalty")
 
-    tickers = prices.columns.tolist()
-    returns = prices.pct_change(fill_method=None).dropna()
+    l = (1.0 - (candidate_df["adv"] / max_adv).clip(0, 1)) * gamma_l
+    for ticker in candidate_df.index:
+        if candidate_df.loc[ticker, "is_etf_shelter"]:
+            l[ticker] = 0.0
+    return l.rename("l_penalty")
 
-    current_date = prices.index[-1].tz_localize(None)
-    today_date = pd.Timestamp.now().tz_localize(None)
-    
-    is_time_machine_mode = (today_date - current_date).days > 15
 
-    # 1. Technical Trends (Updated to include volumes)
-    print(f"1️⃣  Calculating Trend Factors (Minervini QM, etc.)...")
-    if volumes is None:
-        # Fallback if volumes not provided
-        volumes = pd.DataFrame(1.0, index=prices.index, columns=prices.columns)
-    
-    Q_trend = generate_trend_views(prices, volumes)
+def assemble_net_expected_return(
+    snapshot_df: pd.DataFrame,
+    sigma_spec_series: pd.Series,
+    candidate_df: pd.DataFrame,
+    nav: float,
+    gamma_u: float = UNCERTAINTY_PENALTY,
+    gamma_l: float = LIQUIDITY_PENALTY,
+    ic: float | None = None,
+    alpha_weights: dict | None = None,
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """
+    Assembles mu_tilde for all assets in the candidate frame.
 
-    # 2. Macro & Kill-Switch
-    if is_time_machine_mode:
-        Q_macro = pd.Series(0.0, index=tickers)
-        Q_skew = pd.Series(0.0, index=tickers)
-        macro_signals = {
-            "kill_switch": False, 
-            "vix_level": 20.0, 
-            "vix_scalar": 1.0,
-            "tilt_to_quality": False
+    For equity assets:  mu_i = IC * sigma_i * z_i  (from fundamental model)
+    For ETF assets:     mu_i = 0                    (no fundamental alpha)
+
+    Then: mu_tilde_i = mu_i - gamma_u * u_i - gamma_l * l_i
+
+    Returns
+    -------
+    mu_tilde : net expected return vector (annualized decimal)
+    mu       : raw IC-scaled expected return (equity non-zero; ETF zero)
+    u        : uncertainty penalty vector
+    l        : liquidity penalty vector
+    """
+    from config import IC_INITIAL
+    if ic is None:
+        ic = IC_INITIAL
+
+    all_tickers = candidate_df.index.tolist()
+
+    # --- build mu ---
+    equity_tickers = [t for t in all_tickers if not candidate_df.loc[t, "is_etf_shelter"]]
+    equity_snap    = snapshot_df.reindex(equity_tickers) if not snapshot_df.empty else pd.DataFrame()
+
+    mu_equity, _, _ = build_expected_return_vector(
+        equity_snap, sigma_spec_series, alpha_weights, ic,
+    )
+
+    mu = pd.Series(0.0, index=all_tickers, name="mu")
+    if not mu_equity.empty:
+        mu.update(mu_equity)
+
+    # --- build u ---
+    u = build_uncertainty_penalty_vector(all_tickers)
+    u = u.reindex(all_tickers).fillna(u.median() if not u.empty else 0.05)
+
+    # --- build l ---
+    l = build_liquidity_penalty_vector(candidate_df, nav, gamma_l)
+
+    # --- assemble ---
+    u_aligned = u.reindex(all_tickers).fillna(0.0)
+    l_aligned = l.reindex(all_tickers).fillna(0.0)
+    mu_tilde  = mu - gamma_u * u_aligned - l_aligned
+    mu_tilde.name = "mu_tilde"
+
+    return mu_tilde, mu, u_aligned, l_aligned
+
+
+def get_constraint_adjustments(is_live: bool = True) -> dict:
+    """
+    Fetches live macro state and returns adjusted sleeve and currency bounds.
+    In historical replay mode, returns base constraint bounds unchanged.
+    """
+    base_sleeve = SLEEVE_DEFINITIONS.copy()
+    base_ccy = {
+        "USD": {"min": MIN_WEIGHT_USD, "max": MAX_WEIGHT_USD},
+        "KRW": {"min": MIN_WEIGHT_KRW, "max": MAX_WEIGHT_KRW},
+    }
+
+    if not is_live:
+        return {
+            "sleeve_bounds": base_sleeve,
+            "ccy_bounds":    base_ccy,
+            "macro_state":   {"vix_level": 20.0, "fx_vol": 0.0, "stress_regime": "normal"},
         }
-        base_kill_switch = False
-        vix_trigger = False
-        fx_trigger = False
-        fx_volatility = 0.0
-    else:
-        Q_macro = get_macro_expected_returns(tickers)
-        Q_skew = generate_options_skew_views(tickers)
-        macro_signals = get_macro_signals()
-        
-        vix_level = macro_signals.get("vix_level", 20.0)
-        if isinstance(vix_level, (pd.Series, pd.DataFrame)): vix_level = vix_level.iloc[-1]
-        vix_trigger = vix_level > VIX_KILLSWITCH
-        
-        base_kill_switch = macro_signals.get("kill_switch", False)
-        
-        try:
-            fx_data = yf.download("USDKRW=X", period="10d", interval="1d", progress=False)['Close']
-            if isinstance(fx_data, pd.DataFrame): recent_fx = fx_data.iloc[:, 0].tail(5)
-            else: recent_fx = fx_data.tail(5)
-            fx_volatility = (recent_fx.max() / recent_fx.min()) - 1
-        except Exception: fx_volatility = 0.0
-        fx_trigger = fx_volatility > FX_KILLSWITCH_LIMIT
 
-    # 3. Fundamental & Smart money
-    print(f"2️⃣  Calculating Fundamental Factors (Balance, Growth, ROE, etc.)...")
-    Q_fundamental = generate_fundamental_views(tickers)
-
-    # 4. Idiosyncratic alpha
-    print(f"3️⃣  Extracting Idiosyncratic Alpha...")
-    try:
-        ff_factors = fetch_ff_factors()
-        Q_alpha = extract_idiosyncratic_alpha(returns, ff_factors)
-    except Exception:
-        Q_alpha = pd.Series(0.0, index=tickers)
-
-    # Combine signals
-    # Since AGENTS.md provides specific weights for 13 factors which reside in Q_trend and Q_fundamental,
-    # we'll assume Q_trend and Q_fundamental already contain their internal weighted sums.
-    # The AGENTS.md total weight for Trend is ~0.3667 and Fundamental is ~0.6334.
-    W_trend = 0.22
-    W_fundamental = 0.38
-
-    ann_volatility = returns.std() * np.sqrt(252)
-
-    trend_multiplier = (Q_trend - 0.5) * 2.0
-    fundamental_multiplier = (Q_fundamental - 0.5) * 2.0
-
-    Q_trend = trend_multiplier * ann_volatility * 0.5
-    Q_fundamental = fundamental_multiplier * ann_volatility * 0.5
-    
-    final_raw_q = (Q_trend * W_trend) \
-                .add(Q_fundamental * W_fundamental, fill_value=0) \
-                .add(Q_skew * Q_WEIGHTS['skew'], fill_value=0) \
-                .add(Q_alpha * Q_WEIGHTS['alpha'], fill_value=0)
-    
-    final_raw_q = final_raw_q.fillna(0.0)
-
-    q_df = pd.DataFrame({"Q_trend": Q_trend,
-                         "Q_fundamental": Q_fundamental,
-                         "Q_skew": Q_skew,
-                         "Q_alpha": Q_alpha,
-                         "final_raw_q": final_raw_q})
-    q_df.to_csv('outputs/Q_matrix.csv')
-
-    # Kill-Switch & Filters
-    combined_kill_switch = bool(base_kill_switch or vix_trigger or fx_trigger)
-    macro_signals["global_kill_switch"] = combined_kill_switch
-    macro_signals["kr_kill_switch"] = fx_trigger
-    
-    final_q_views = apply_macro_filters(final_raw_q, macro_signals)
-
-    # Eval 2: Dynamic Penalty & Defensive ETF boost
-    print("\n🛡️ Applying Tactical Penalties & Defensive Boosts...")
-    for ticker in final_q_views.index:
-        clean_t = str(ticker).split('.')[0]
-        if clean_t in DEFENSIVE_ETFS:
-            if not combined_kill_switch:
-                final_q_views[ticker] = -2.0 # Risk-On: penalize defensive
-            else:
-                final_q_views[ticker] = 2.0  # Risk-Off: boost defensive
-        else:
-            if combined_kill_switch:
-                # Force stocks down during kill-switch
-                final_q_views[ticker] = -1.0
-                
-    vix_scalar = macro_signals.get("vix_scalar", 1.0)
-    initial_omega = pd.Series(1.0 * vix_scalar, index=final_q_views.index)
-    
-    return final_q_views, initial_omega, combined_kill_switch
+    macro_state  = get_macro_state()
+    multipliers  = build_constraint_multipliers(macro_state)
+    adj_sleeve, adj_ccy = apply_macro_constraint_adjustments(
+        base_sleeve, base_ccy, multipliers,
+    )
+    return {
+        "sleeve_bounds": adj_sleeve,
+        "ccy_bounds":    adj_ccy,
+        "macro_state":   macro_state,
+        "multipliers":   multipliers,
+    }

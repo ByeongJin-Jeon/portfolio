@@ -1,93 +1,94 @@
 # -*- coding: utf-8 -*-
+"""
+optimization/black_litterman.py
+================================
+Optional Black-Litterman module.
+
+NOT in the default production pipeline.
+Only used when ENABLE_BLACK_LITTERMAN = True is set explicitly in config.
+
+If enabled, BL adjusts the mu_tilde vector with posterior views
+before passing to the mean-risk optimizer.  Views must be provided
+externally (e.g., analyst overrides) via the views dict.
+
+This module does NOT:
+  - generate directional alpha from trend signals
+  - override the IC-scaled fundamental mu
+  - replace the QP optimizer
+"""
+
 import numpy as np
 import pandas as pd
-import riskfolio as rp
-from config import BL_TAU, BL_RISK_AVERSION, RM_METHOD, RISK_FREE_RATE, CDAR_LIMIT, CDAR_ALPHA
 
-def construct_bl_model(returns, hrp_weights, tactical_views, idiosyncratic_vars):
+
+def construct_bl_posterior(
+    mu_prior: pd.Series,
+    Sigma: pd.DataFrame,
+    views: dict,
+    tau: float = 0.05,
+    risk_aversion: float = 2.5,
+) -> pd.Series:
     """
-    Integrates tactical views and executes CDaR optimization for UPI maximization.
+    Computes the Black-Litterman posterior expected return.
+
+    Parameters
+    ----------
+    mu_prior     : IC-scaled prior expected return vector
+    Sigma        : (n x n) covariance matrix
+    views        : dict of {ticker: annualized_return_view}  (absolute views)
+    tau          : uncertainty scaling on the prior (BL_TAU)
+    risk_aversion: used only to re-scale the equilibrium Pi
+
+    Returns
+    -------
+    mu_bl : posterior expected return vector
     """
-    # 1. P Matrix (Picking Matrix)
-    if isinstance(tactical_views, pd.DataFrame):
-        tactical_views = tactical_views.iloc[-1]
-    
-    active_assets = tactical_views[tactical_views != 0].index
+    tickers = mu_prior.index.tolist()
+    n       = len(tickers)
+    mu_arr  = mu_prior.values.astype(float).reshape(-1, 1)
+    S       = Sigma.reindex(tickers, columns=tickers).fillna(0).values.astype(float)
 
-    if len(active_assets) == 0: # Fallback if no signals
-        return hrp_weights
-        
-    P = pd.DataFrame(0.0, index=active_assets, columns=returns.columns)
-    for asset in active_assets:
-        P.loc[asset, asset] = 1.0
-        
-    # 2. Q Vector (Views)
-    # Q = (tactical_views.loc[active_assets].values).reshape(-1, 1)
-    Q = (tactical_views.loc[active_assets].values.astype(float) / 252).reshape(-1, 1)
-    
-    # 3. Omega (Uncertainty Matrix)
-    Omega = np.diag(idiosyncratic_vars.loc[active_assets].astype(float) * BL_TAU)
-    
-    # 4. Black-Litterman Setup
-    port = rp.Portfolio(returns=returns)
-    port.assets_stats(method_mu='hist', method_cov='ledoit')
+    active   = {k: v for k, v in views.items() if k in tickers}
+    if not active:
+        return mu_prior.copy()
 
-    mu = port.mu.values.astype(float).reshape(-1, 1)
-    cov = port.cov.values.astype(float)
-    w_eq = hrp_weights.values.astype(float).reshape(-1, 1)
+    k        = len(active)
+    asset_idx = {t: i for i, t in enumerate(tickers)}
 
-    Pi = BL_RISK_AVERSION * cov.dot(w_eq)
+    P = np.zeros((k, n))
+    Q = np.zeros((k, 1))
+    for row, (ticker, view) in enumerate(active.items()):
+        P[row, asset_idx[ticker]] = 1.0
+        Q[row, 0] = float(view)
 
-    tau_cov_inv = np.linalg.inv(BL_TAU * cov)
-    omega_inv = np.linalg.inv(Omega)
-    M = tau_cov_inv + P.values.astype(float).T.dot(omega_inv).dot(P.values.astype(float))
+    # Omega: diagonal uncertainty matrix proportional to P Sigma P'
+    Omega = np.diag(np.diag(tau * P @ S @ P.T))
+    Omega += np.eye(k) * 1e-8
 
-    mu_bl = np.linalg.inv(M).dot(tau_cov_inv.dot(Pi) + P.values.astype(float).T.dot(omega_inv).dot(Q.astype(float)))
-    cov_bl = cov + np.linalg.inv(M)
+    # BL formula
+    tau_S_inv = np.linalg.inv(tau * S + np.eye(n) * 1e-8)
+    Omega_inv = np.linalg.inv(Omega)
 
-    port.mu_bl = pd.DataFrame(mu_bl.T, columns=returns.columns)
-    port.cov_bl = pd.DataFrame(cov_bl, index=returns.columns, columns=returns.columns)
-    port.cov_bl = port.cov_bl + pd.DataFrame(
-        np.eye(port.cov_bl.shape[0]) * 1e-6, 
-        index=port.cov_bl.index, 
-        columns=port.cov_bl.columns
-    )
-    
-    # 5. Optimization: Maximize UPI subject to CDaR <= 15%
-    # In Riskfolio, 'Sharpe' + rm='CDaR' maximizes the Ulcer Performance Index
+    M      = np.linalg.inv(tau_S_inv + P.T @ Omega_inv @ P)
+    mu_bl  = M @ (tau_S_inv @ mu_arr + P.T @ Omega_inv @ Q)
 
-    # Stage 1: Attempt to Maximize UPI (Return/CDaR)
-    # port.alpha = CDAR_ALPHA
-    # port.upperCDaR = CDAR_LIMIT
-    # port.upperlng = 0.15
+    return pd.Series(mu_bl.flatten(), index=tickers, name="mu_bl")
 
-    w_optimized = port.optimization(
-        model='BL', 
-        rm=RM_METHOD, 
-        obj='Sharpe',
-        rf=RISK_FREE_RATE / 252,
-        hist=False
-    )
-    
-    # If the solver fails to find a solution satisfying both max Sharpe and the CDaR limit:
-    if w_optimized is None or w_optimized.empty:
-        print("[FALLBACK] Survival comes first! Removing CDaR limit and switching to MinRisk objective.")
-        
-        port.upperCDaR = None # Remove the strict CDaR limit to give the solver breathing room
-        
-        w_optimized = port.optimization(
-            model='BL',
-            rm='CDaR',
-            obj='MinRisk',    # Go all-in on defense (Minimize Risk)
-            rf=0,
-            hist=True
-        )
-        
-        # If it still fails, deploy the last resort: HRP weights
-        if w_optimized is None or w_optimized.empty:
-             print("[CRITICAL] 2nd optimization failed! Deploying HRP weights as the last resort.")
-             w_optimized = hrp_weights
-    else:
-        print(f"[SUCCESS] Optimization completed!")
-    
-    return w_optimized
+
+def apply_bl_if_enabled(
+    mu_tilde: pd.Series,
+    Sigma: pd.DataFrame,
+    views: dict,
+    enabled: bool = False,
+    tau: float = 0.05,
+) -> pd.Series:
+    """
+    Entry point: apply BL only when enabled=True.
+    Otherwise returns mu_tilde unchanged.
+
+    views = {} is fine (no-op even when enabled).
+    """
+    if not enabled or not views:
+        return mu_tilde
+
+    return construct_bl_posterior(mu_tilde, Sigma, views, tau)
