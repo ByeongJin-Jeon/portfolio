@@ -25,11 +25,11 @@ class UniverseManager:
 
     @staticmethod
     def get_dow_jones_tickers():
-        url = 'https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average'
+        url = 'https://en.wikipedia.org/wiki/List_of_Dow_Jones_Industrial_Average_companies'
         req = request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with request.urlopen(req) as response:
             table = pd.read_html(response)
-        return table[1]['Symbol'].tolist()
+        return table[0]['Symbol'].tolist()
 
     @staticmethod
     def get_kospi_200_tickers():
